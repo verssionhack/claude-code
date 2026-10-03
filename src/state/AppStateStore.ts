@@ -432,6 +432,8 @@ export type AppState = DeepImmutable<{
   advisorModel?: string
   // Effort value
   effortValue?: EffortValue
+  // Sampling temperature override set via /temperature (session-only; undefined = default)
+  temperatureOverride?: number
   // Set synchronously in launchUltraplan before the detached flow starts.
   // Prevents duplicate launches during the ~5s window before
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
@@ -571,6 +573,7 @@ export function getDefaultAppState(): AppState {
     authVersion: 0,
     initialMessage: null,
     effortValue: undefined,
+    temperatureOverride: undefined,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

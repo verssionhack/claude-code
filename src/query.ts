@@ -932,6 +932,7 @@ async function* queryLoop(
               ),
               queryTracking,
               effortValue: appState.effortValue,
+              temperatureOverride: appState.temperatureOverride,
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,
