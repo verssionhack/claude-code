@@ -37,8 +37,7 @@
   "files": [
     "dist",
     "scripts/postinstall.cjs",
-    "scripts/run-parallel.mjs",
-    "scripts/setup-chrome-mcp.mjs"
+    "scripts/run-parallel.mjs"
   ],
   "scripts": {
     "build": "bun run build.ts",
@@ -62,7 +61,7 @@
     "check:bundle": "bun run scripts/check-bundle-integrity.ts",
     "check:unused": "knip-bun",
     "health": "bun run scripts/health-check.ts",
-    "postinstall": "node scripts/run-parallel.mjs scripts/postinstall.cjs scripts/setup-chrome-mcp.mjs",
+    "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
     "precheck": "bun run typecheck && bun run check:fix && bun test",
@@ -99,7 +98,6 @@
     "@claude-code-best/agent-tools": "workspace:*",
     "@claude-code-best/builtin-tools": "workspace:*",
     "@claude-code-best/mcp-client": "workspace:*",
-    "@claude-code-best/weixin": "workspace:*",
     "@commander-js/extra-typings": "^14.0.0",
     "@growthbook/growthbook": "^1.6.5",
     "@langfuse/otel": "^5.1.0",

@@ -17,6 +17,7 @@ import {
   notifySessionMetadataChanged,
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
+import { persistSessionOverrides } from '../utils/sessionOverrides.js'
 import type { AppState } from './AppStateStore.js'
 
 // Inverse of the push below — restore on worker restart.
@@ -96,6 +97,20 @@ export function onChangeAppState({
   // model override in memory via setMainLoopModelOverride.
   if (newState.mainLoopModel !== oldState.mainLoopModel) {
     setMainLoopModelOverride(newState.mainLoopModel)
+  }
+
+  // Session-scoped tuning (/model, /temperature, /top-k…, /thinking,
+  // /compact_after) — snapshot to a per-session sidecar file so
+  // claude -r <id> resumes with the same settings. (max_context_set lives
+  // outside AppState; it persists itself via persistSessionOverrides.)
+  if (
+    newState.mainLoopModel !== oldState.mainLoopModel ||
+    newState.temperatureOverride !== oldState.temperatureOverride ||
+    newState.samplingOptions !== oldState.samplingOptions ||
+    newState.thinkingOverride !== oldState.thinkingOverride ||
+    newState.compactAfter !== oldState.compactAfter
+  ) {
+    persistSessionOverrides(newState)
   }
 
   // expandedView → persist as showExpandedTodos + showSpinnerTree for backwards compat

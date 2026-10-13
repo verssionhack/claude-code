@@ -9,6 +9,7 @@ import { FileWriteTool } from '@claude-code-best/builtin-tools/tools/FileWriteTo
 import { GlobTool } from '@claude-code-best/builtin-tools/tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from '@claude-code-best/builtin-tools/tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from '@claude-code-best/builtin-tools/tools/WebFetchTool/WebFetchTool.js'
+import { ListModelTool } from '@claude-code-best/builtin-tools/tools/ListModelTool/ListModelTool.js'
 import { TaskStopTool } from '@claude-code-best/builtin-tools/tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from '@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
@@ -231,6 +232,7 @@ export function getAllBaseTools(): Tools {
     NotebookEditTool,
     ArtifactTool,
     WebFetchTool,
+    ListModelTool,
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,

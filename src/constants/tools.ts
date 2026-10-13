@@ -11,6 +11,7 @@ import { WEB_SEARCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebS
 import { TODO_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TodoWriteTool/constants.js'
 import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFetchTool/prompt.js'
+import { LIST_MODEL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ListModelTool/ListModelTool.js'
 import { GLOB_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GlobTool/prompt.js'
 import { SHELL_TOOL_NAMES } from '../utils/shell/shellToolUtils.js'
 import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
@@ -161,6 +162,7 @@ export const CORE_TOOLS = new Set([
   // Web
   WEB_FETCH_TOOL_NAME, // 'WebFetch'
   WEB_SEARCH_TOOL_NAME, // 'WebSearch'
+  LIST_MODEL_TOOL_NAME, // 'ListModel'
   // Code intelligence
   LSP_TOOL_NAME, // 'LSP'
   // Skills

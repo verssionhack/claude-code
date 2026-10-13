@@ -43,6 +43,10 @@ import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
 import { getPlansDirectory } from './plans.js'
+import {
+  applySessionOverrides,
+  loadSessionOverrides,
+} from './sessionOverrides.js'
 import { setCwd } from './Shell.js'
 import {
   adoptResumedSessionFile,
@@ -424,6 +428,16 @@ export async function processResumedConversation(
     initialState: AppState
   },
 ): Promise<ProcessedResume> {
+  // Session-scoped tuning saved by the previous run of this session id
+  // (/model, /temperature, /top-k…, /thinking, /compact_after,
+  // /max_context_set). Keyed on the source session id so forks inherit too.
+  const savedOverrides = await loadSessionOverrides(
+    opts.sessionIdOverride ?? result.sessionId ?? getSessionId(),
+  )
+  if (savedOverrides) {
+    applySessionOverrides(savedOverrides)
+  }
+
   // Match coordinator/normal mode to the resumed session
   let modeWarning: string | undefined
   if (feature('COORDINATOR_MODE')) {
@@ -559,6 +573,24 @@ export async function processResumedConversation(
       ...(restoredAttribution && { attribution: restoredAttribution }),
       ...(standaloneAgentContext && { standaloneAgentContext }),
       agentDefinitions: refreshedAgentDefs,
+      // Explicit CLI --model (bootstrap override set at launch) wins over
+      // the saved session model — mirrors restoreAgentFromSession's guard.
+      ...(savedOverrides?.model !== undefined &&
+        !getMainLoopModelOverride() && {
+          mainLoopModel: savedOverrides.model,
+        }),
+      ...(savedOverrides?.temperatureOverride !== undefined && {
+        temperatureOverride: savedOverrides.temperatureOverride,
+      }),
+      ...(savedOverrides?.samplingOptions !== undefined && {
+        samplingOptions: savedOverrides.samplingOptions,
+      }),
+      ...(savedOverrides?.thinkingOverride !== undefined && {
+        thinkingOverride: savedOverrides.thinkingOverride,
+      }),
+      ...(savedOverrides?.compactAfter !== undefined && {
+        compactAfter: savedOverrides.compactAfter,
+      }),
     },
   }
 }

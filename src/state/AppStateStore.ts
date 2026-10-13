@@ -27,6 +27,7 @@ import {
   createEmptyAttributionState,
 } from '../utils/commitAttribution.js'
 import type { EffortValue } from '../utils/effort.js'
+import type { SamplingOptions } from '../utils/sampling.js'
 import type { FileHistoryState } from '../utils/fileHistory.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
@@ -434,6 +435,21 @@ export type AppState = DeepImmutable<{
   effortValue?: EffortValue
   // Sampling temperature override set via /temperature (session-only; undefined = default)
   temperatureOverride?: number
+  // Sampling params set via /top-k, /top-p, /min-p, /repeat-penalty
+  // (session-only; sent as extra body fields — self-hosted backends only)
+  samplingOptions?: SamplingOptions
+  // Thinking on/off/budget override set via /thinking (session-only;
+  // undefined = default). On self-hosted backends this also drives
+  // chat_template_kwargs.enable_thinking so llama.cpp can toggle at the
+  // chat-template level.
+  thinkingOverride?: { enabled: boolean; budgetTokens?: number }
+  // /compact_after: compact when a turn ends naturally and the context has
+  // reached this length. tokens = absolute count; percent = share of the
+  // effective context window (resolved at check time, so it adapts to the
+  // server-reported window). undefined = disabled.
+  compactAfter?:
+    | { kind: 'tokens'; value: number }
+    | { kind: 'percent'; value: number }
   // Set synchronously in launchUltraplan before the detached flow starts.
   // Prevents duplicate launches during the ~5s window before
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
@@ -574,6 +590,9 @@ export function getDefaultAppState(): AppState {
     initialMessage: null,
     effortValue: undefined,
     temperatureOverride: undefined,
+    samplingOptions: undefined,
+    thinkingOverride: undefined,
+    compactAfter: undefined,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

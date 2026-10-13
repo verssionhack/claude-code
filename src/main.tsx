@@ -162,7 +162,6 @@ import {
   renderAndRun,
   showSetupScreens,
 } from './interactiveHelpers.js';
-import { initBuiltinPlugins } from './plugins/bundled/index.js';
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
@@ -2393,7 +2392,6 @@ async function run(): Promise<CommanderCommand> {
       // reads synchronously. Previously ran inside setup() after ~20ms of
       // await points, so the parallel getCommands() memoized an empty list.
       if (process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent') {
-        initBuiltinPlugins();
         initBundledSkills();
       }
       const setupPromise = setup(

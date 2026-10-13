@@ -14,6 +14,7 @@ import {
 } from 'src/utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from 'src/utils/settings/settings.js'
 import { asSystemPrompt } from 'src/utils/systemPromptType.js'
+import { parseUserSpecifiedModel } from 'src/utils/model/model.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 
@@ -546,6 +547,7 @@ export async function applyPromptToMarkdown(
   signal: AbortSignal,
   isNonInteractiveSession: boolean,
   isPreapprovedDomain: boolean,
+  model?: string,
 ): Promise<string> {
   // Truncate content to avoid "Prompt is too long" errors from the secondary model
   const truncatedContent =
@@ -570,6 +572,7 @@ export async function applyPromptToMarkdown(
       hasAppendSystemPrompt: false,
       mcpTools: [],
     },
+    model: model ? parseUserSpecifiedModel(model) : undefined,
   })
 
   // We need to bubble this up, so that the tool call throws, causing us to return

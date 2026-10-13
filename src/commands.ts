@@ -13,6 +13,7 @@ import copy from './commands/copy/index.js'
 import desktop from './commands/desktop/index.js'
 import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
+import compactAfter from './commands/compact_after/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 // cost/index.ts re-exports usage — /cost is now an alias of /usage
@@ -234,6 +235,13 @@ import exportCommand from './commands/export/index.js'
 import model from './commands/model/index.js'
 import tag from './commands/tag/index.js'
 import temperature from './commands/temperature/index.js'
+import topK from './commands/top-k/index.js'
+import topP from './commands/top-p/index.js'
+import minP from './commands/min-p/index.js'
+import repeatPenalty from './commands/repeat-penalty/index.js'
+import presencePenalty from './commands/presence-penalty/index.js'
+import thinking from './commands/thinking/index.js'
+import maxContextSet from './commands/max_context_set/index.js'
 import outputStyle from './commands/output-style/index.js'
 import remoteEnv from './commands/remote-env/index.js'
 import upgrade from './commands/upgrade/index.js'
@@ -319,6 +327,7 @@ const COMMANDS = memoize((): Command[] => [
   clear,
   color,
   compact,
+  compactAfter,
   config,
   copy,
   desktop,
@@ -358,6 +367,13 @@ const COMMANDS = memoize((): Command[] => [
   stickers,
   tag,
   temperature,
+  topK,
+  topP,
+  minP,
+  repeatPenalty,
+  presencePenalty,
+  thinking,
+  maxContextSet,
   theme,
   feedback,
   review,
@@ -744,6 +760,7 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
 export const BRIDGE_SAFE_COMMANDS: Set<Command> = new Set(
   [
     compact, // Shrink context — useful mid-session from a phone
+    compactAfter, // Set compact-after threshold
     clear, // Wipe transcript
     usage, // Show session cost (/cost alias)
     summary, // Summarize conversation

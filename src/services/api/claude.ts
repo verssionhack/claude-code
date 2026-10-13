@@ -88,6 +88,7 @@ import {
   getDefaultSonnetModel,
   getSmallFastModel,
   isNonCustomOpusModel,
+  type ModelName,
 } from '../../utils/model/model.js'
 import {
   asSystemPrompt,
@@ -206,6 +207,11 @@ import {
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
 } from '../../utils/model/model.js'
+import { recordResolvedModel } from '../../utils/model/modelCapabilities.js'
+import {
+  samplingToBodyParams,
+  type SamplingOptions,
+} from '../../utils/sampling.js'
 import {
   startSessionActivity,
   stopSessionActivity,
@@ -710,6 +716,10 @@ export type Options = {
   enablePromptCaching?: boolean
   skipCacheWrite?: boolean
   temperatureOverride?: number
+  samplingOptions?: SamplingOptions
+  // /thinking session override. On self-hosted endpoints this also toggles
+  // chat_template_kwargs.enable_thinking (llama.cpp-style backends).
+  thinkingOverride?: { enabled: boolean; budgetTokens?: number }
   effortValue?: EffortValue
   mcpTools: Tools
   hasPendingMcpServers?: boolean
@@ -1056,6 +1066,18 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // /thinking session override takes precedence over the startup thinkingConfig
+  if (options.thinkingOverride) {
+    thinkingConfig = options.thinkingOverride.enabled
+      ? {
+          type: 'enabled',
+          budgetTokens:
+            options.thinkingOverride.budgetTokens ??
+            getMaxThinkingTokensForModel(options.model),
+        }
+      : { type: 'disabled' }
+  }
+
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.
@@ -1712,6 +1734,31 @@ async function* queryModel(
       }
     }
 
+    // /thinking override on self-hosted endpoints (llama.cpp and compatible):
+    // the Claude-specific modelSupportsThinking() check above never matches
+    // local model names, so force the thinking field (the server's
+    // anthropic->OAI converter maps budget_tokens to a reasoning budget) and
+    // toggle chat_template_kwargs.enable_thinking, which llama.cpp applies at
+    // the chat-template level.
+    let chatTemplateKwargs: { enable_thinking: boolean } | undefined
+    if (
+      options.thinkingOverride &&
+      getAPIProvider() === 'firstParty' &&
+      !isFirstPartyAnthropicBaseUrl()
+    ) {
+      const { enabled, budgetTokens } = options.thinkingOverride
+      chatTemplateKwargs = { enable_thinking: enabled }
+      if (enabled && hasThinking) {
+        thinking = {
+          budget_tokens: Math.min(
+            maxOutputTokens - 1,
+            budgetTokens ?? getMaxThinkingTokensForModel(options.model),
+          ),
+          type: 'enabled',
+        } satisfies BetaMessageStreamParams['thinking']
+      }
+    }
+
     // Get API context management strategies if enabled
     const contextManagement = getAPIContextManagement({
       hasThinking,
@@ -1778,6 +1825,10 @@ async function* queryModel(
       ? (options.temperatureOverride ?? 1)
       : undefined
 
+    // Session sampling params (/top-k etc.) — extra body fields for
+    // self-hosted backends; omitted entirely when unset.
+    const samplingParams = samplingToBodyParams(options.samplingOptions)
+
     // Filter out any empty-string beta headers before sending.
     // Constants like CACHE_EDITING_BETA_HEADER or AFK_MODE_BETA_HEADER
     // can be '' when their feature gate is off; an empty string in the
@@ -1810,6 +1861,7 @@ async function* queryModel(
           context_management: contextManagement,
         }),
       ...extraBodyParams,
+      ...samplingParams,
       ...(Object.keys(outputConfig).length > 0 && {
         output_config: outputConfig,
       }),
@@ -2077,6 +2129,10 @@ async function* queryModel(
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
+            // Learn the requested-name → canonical-id mapping so
+            // server-reported model capabilities (max_input_tokens) apply to
+            // short alias names sent to proxies.
+            recordResolvedModel(options.model, partialMessage?.model)
             // Capture research from message_start if available (internal only).
             // Always overwrite with the latest value.
             if (
@@ -3399,12 +3455,15 @@ export async function queryHaiku({
   outputFormat,
   signal,
   options,
+  model,
 }: {
   systemPrompt: SystemPrompt
   userPrompt: string
   outputFormat?: BetaJSONOutputFormat
   signal: AbortSignal
   options: HaikuOptions
+  /** Explicit model id for this call (defaults to getSmallFastModel()). */
+  model?: ModelName
 }): Promise<AssistantMessage> {
   const result = await withVCR(
     [
@@ -3430,7 +3489,7 @@ export async function queryHaiku({
         signal,
         options: {
           ...options,
-          model: getSmallFastModel(),
+          model: model ?? getSmallFastModel(),
           enablePromptCaching: options.enablePromptCaching ?? false,
           outputFormat,
           async getToolPermissionContext() {

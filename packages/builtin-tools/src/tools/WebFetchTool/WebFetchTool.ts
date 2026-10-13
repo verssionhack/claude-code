@@ -27,6 +27,12 @@ const inputSchema = lazySchema(() =>
   z.strictObject({
     url: z.string().url().describe('The URL to fetch content from'),
     prompt: z.string().describe('The prompt to run on the fetched content'),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'Optional model used for the secondary content-processing call. Accepts a family alias (sonnet/opus/haiku/best), or any full/custom model id including server model ids from self-hosted backends. Use the ListModel tool to discover available model ids. If omitted, uses the default small/fast model.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -208,7 +214,7 @@ ${DESCRIPTION}`
   renderToolUseProgressMessage,
   renderToolResultMessage,
   async call(
-    { url, prompt },
+    { url, prompt, model },
     { abortController, options: { isNonInteractiveSession } },
   ) {
     const start = Date.now()
@@ -260,6 +266,7 @@ Please use WebFetch again with the redirect URL.`
           abortController.signal,
           isNonInteractiveSession,
           isPreapprovedUrl(url),
+          model,
         )
       }
 
@@ -342,6 +349,7 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
         abortController.signal,
         isNonInteractiveSession,
         isPreapproved,
+        model,
       )
     }
 

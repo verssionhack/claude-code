@@ -16,6 +16,7 @@ import {
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import { checkOpus1mAccess, checkSonnet1mAccess } from './check1mAccess.js'
 import { getAPIProvider } from './providers.js'
+import { getServerModelOptions } from './modelCapabilities.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
   getCanonicalName,
@@ -574,6 +575,14 @@ export function getModelOptions(fastMode = false): ModelOption[] {
   for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
     if (!options.some(existing => existing.value === opt.value)) {
       options.push(opt)
+    }
+  }
+
+  // Custom endpoints (llama.cpp etc.): put the models the server reports via
+  // /v1/models at the top of the picker — they are the ones actually servable
+  for (const opt of getServerModelOptions()) {
+    if (!options.some(existing => existing.value === opt.value)) {
+      options.unshift(opt)
     }
   }
 

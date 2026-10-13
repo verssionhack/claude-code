@@ -10,6 +10,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { Text } from '@anthropic/ink';
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js';
 import { refreshPolicyLimits } from '../../services/policyLimits/index.js';
+import { refreshModelCapabilities } from '../../utils/model/modelCapabilities.js';
 import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { stripSignatureBlocks } from '../../utils/messages.js';
@@ -43,6 +44,8 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
           void refreshRemoteManagedSettings();
           // Refresh policy limits after login (non-blocking)
           void refreshPolicyLimits();
+          // Re-fetch /v1/models so the /model picker reflects the new endpoint
+          void refreshModelCapabilities();
           // Clear user data cache BEFORE GrowthBook refresh so it picks up fresh credentials
           resetUserCache();
           // Refresh GrowthBook after login to get updated feature flags (e.g., for claude.ai MCPs)
