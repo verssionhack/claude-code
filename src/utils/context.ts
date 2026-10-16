@@ -13,8 +13,8 @@ import { getMaxContextTokensOverride } from './contextWindowOverride.js'
 
 // Model context window size (200k tokens for all models right now)
 //export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
-//export const MODEL_CONTEXT_WINDOW_DEFAULT = 256 * 1024
-export const MODEL_CONTEXT_WINDOW_DEFAULT = 1024 * 1024
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 256 * 1024
+//export const MODEL_CONTEXT_WINDOW_DEFAULT = 1024 * 1024
 
 // Maximum output tokens for compact operations
 export const COMPACT_MAX_OUTPUT_TOKENS = 20_000

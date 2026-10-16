@@ -108,7 +108,8 @@ export function onChangeAppState({
     newState.temperatureOverride !== oldState.temperatureOverride ||
     newState.samplingOptions !== oldState.samplingOptions ||
     newState.thinkingOverride !== oldState.thinkingOverride ||
-    newState.compactAfter !== oldState.compactAfter
+    newState.compactAfter !== oldState.compactAfter ||
+    newState.apiTimeoutMs !== oldState.apiTimeoutMs
   ) {
     persistSessionOverrides(newState)
   }

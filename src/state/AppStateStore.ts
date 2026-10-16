@@ -450,6 +450,10 @@ export type AppState = DeepImmutable<{
   compactAfter?:
     | { kind: 'tokens'; value: number }
     | { kind: 'percent'; value: number }
+  // /api_timeout: per-request API client timeout in ms (session-only;
+  // undefined = default 600s). Mirrored to the API_TIMEOUT_MS env var so the
+  // freshly-built SDK client picks it up on the next request.
+  apiTimeoutMs?: number
   // Set synchronously in launchUltraplan before the detached flow starts.
   // Prevents duplicate launches during the ~5s window before
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
@@ -593,6 +597,7 @@ export function getDefaultAppState(): AppState {
     samplingOptions: undefined,
     thinkingOverride: undefined,
     compactAfter: undefined,
+    apiTimeoutMs: undefined,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

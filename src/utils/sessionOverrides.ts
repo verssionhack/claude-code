@@ -14,6 +14,7 @@ import {
   setMaxContextTokensOverride,
 } from './contextWindowOverride.js'
 import type { SamplingOptions } from './sampling.js'
+import { setApiTimeoutOverride } from './apiTimeout.js'
 import { jsonStringify } from './slowOperations.js'
 
 /**
@@ -33,6 +34,7 @@ export type SessionOverrides = {
     | { kind: 'tokens'; value: number }
     | { kind: 'percent'; value: number }
   maxContextTokens?: number
+  apiTimeoutMs?: number
 }
 
 function overridesPath(sessionId: string): string {
@@ -60,6 +62,9 @@ export function captureSessionOverrides(
     ...(state.compactAfter !== undefined && {
       compactAfter: state.compactAfter,
     }),
+    ...(state.apiTimeoutMs !== undefined && {
+      apiTimeoutMs: state.apiTimeoutMs,
+    }),
   }
   const maxCtx = getMaxContextTokensOverride()
   if (maxCtx !== undefined) data.maxContextTokens = maxCtx
@@ -70,7 +75,8 @@ export function captureSessionOverrides(
     data.samplingOptions !== undefined ||
     data.thinkingOverride !== undefined ||
     data.compactAfter !== undefined ||
-    data.maxContextTokens !== undefined
+    data.maxContextTokens !== undefined ||
+    data.apiTimeoutMs !== undefined
   return hasContent ? data : undefined
 }
 
@@ -151,6 +157,10 @@ export async function loadSessionOverrides(
       out.maxContextTokens = o.maxContextTokens
     }
 
+    if (typeof o.apiTimeoutMs === 'number' && o.apiTimeoutMs > 0) {
+      out.apiTimeoutMs = o.apiTimeoutMs
+    }
+
     return out
   } catch {
     return undefined
@@ -168,5 +178,8 @@ export function applySessionOverrides(overrides: SessionOverrides): void {
   }
   if (overrides.maxContextTokens !== undefined) {
     setMaxContextTokensOverride(overrides.maxContextTokens)
+  }
+  if (overrides.apiTimeoutMs !== undefined) {
+    setApiTimeoutOverride(overrides.apiTimeoutMs)
   }
 }

@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import addDir from './commands/add-dir/index.js'
+import apiTimeout from './commands/api_timeout/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
 import btw from './commands/btw/index.js'
@@ -374,6 +375,7 @@ const COMMANDS = memoize((): Command[] => [
   presencePenalty,
   thinking,
   maxContextSet,
+  apiTimeout,
   theme,
   feedback,
   review,
@@ -761,6 +763,7 @@ export const BRIDGE_SAFE_COMMANDS: Set<Command> = new Set(
   [
     compact, // Shrink context — useful mid-session from a phone
     compactAfter, // Set compact-after threshold
+    apiTimeout, // Set per-request API client timeout
     clear, // Wipe transcript
     usage, // Show session cost (/cost alias)
     summary, // Summarize conversation
