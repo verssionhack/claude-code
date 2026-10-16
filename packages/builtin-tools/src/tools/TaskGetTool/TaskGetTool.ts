@@ -5,6 +5,7 @@ import {
   getTask,
   getTaskListId,
   isTodoV2Enabled,
+  TaskIdSchema,
   TaskStatusSchema,
 } from 'src/utils/tasks.js'
 import { TASK_GET_TOOL_NAME } from './constants.js'
@@ -12,7 +13,7 @@ import { DESCRIPTION, PROMPT } from './prompt.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    taskId: z.string().describe('The ID of the task to retrieve'),
+    taskId: TaskIdSchema.describe('The ID of the task to retrieve'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
