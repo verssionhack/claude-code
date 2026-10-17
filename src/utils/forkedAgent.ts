@@ -542,6 +542,14 @@ export async function runForkedAgent({
   // same as the main thread — identical post-repair prefix keeps the cache hit.
   const initialMessages: Message[] = [...forkContextMessages, ...promptMessages]
 
+  // The fork shares the parent's prompt prefix so it can hit the server's prefix cache. On a
+  // local inference server that cache is the retained KV of the conversation: when the parent
+  // has advanced past this snapshot (a concurrent main turn), the fork instead pays a full
+  // re-prefill of the whole context. Log its size so a large-context fork is attributable.
+  logForDebugging(
+    `Forked agent [${forkLabel}] starting: context=${forkContextMessages.length} messages + ${promptMessages.length} prompt (source=${querySource})`,
+  )
+
   // Generate agent ID and record initial messages for transcript
   // When skipTranscript is set, skip agent ID creation and all transcript I/O
   const agentId = skipTranscript ? undefined : createAgentId(forkLabel)
