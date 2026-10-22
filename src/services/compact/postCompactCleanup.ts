@@ -1,12 +1,16 @@
 import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
-import { getUserContext } from '../../context.js'
+import { clearPersistedPromptContext, getUserContext } from '../../context.js'
 import { clearSpeculativeChecks } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
+import { getCwd } from '../../utils/cwd.js'
 import { logError } from '../../utils/log.js'
-import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
+import {
+  clearSessionMessagesCache,
+  recordPromptCwd,
+} from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
 
@@ -72,6 +76,15 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     resetGetMemoryFilesCache('compact')
   }
   clearSystemPromptSections()
+  if (isMainThreadCompact) {
+    // A compact is a genuine re-render point: drop the replayed context and
+    // let the next turn derive it from the live environment. fetchSystemPromptParts
+    // records the fresh snapshot for the next resume.
+    clearPersistedPromptContext()
+    // The next turn re-renders the env section from the live cwd. Persist it
+    // now so a later resume restores the same leading prompt tokens.
+    recordPromptCwd(getCwd())
+  }
   clearClassifierApprovals()
   clearSpeculativeChecks()
   // Intentionally NOT calling resetSentSkillNames(): re-injecting the full

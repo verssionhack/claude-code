@@ -68,6 +68,7 @@ import type { Stream } from 'src/utils/stream.js'
 import { EMPTY_USAGE } from '@ant/model-provider'
 import {
   loadConversationForResume,
+  replayPersistedSkillListing,
   type TurnInterruptionState,
 } from 'src/utils/conversationRecovery.js'
 import type {
@@ -212,6 +213,7 @@ import {
   saveMode,
   saveAiGeneratedTitle,
   restoreSessionMetadata,
+  recordPromptCwd,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
 import {
@@ -306,6 +308,8 @@ import {
 } from 'src/utils/fileHistory.js'
 import {
   restoreAgentFromSession,
+  restorePromptContext,
+  restoreSessionCwd,
   restoreSessionStateFromLog,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
@@ -5191,6 +5195,11 @@ async function loadInitialMessages(
               await resetSessionFilePointer()
             }
           }
+          // Match the cwd the session's prompt was last rendered with, not
+          // the shell's tail cwd (see resolvePromptCwd).
+          restoreSessionCwd(result.promptCwd)
+          restorePromptContext(result.promptContext)
+          recordPromptCwd(getCwd())
         }
         restoreSessionStateFromLog(result, setAppState)
 
@@ -5355,6 +5364,10 @@ async function loadInitialMessages(
         }
 
         result.messages = index >= 0 ? result.messages.slice(0, index + 1) : []
+        // Truncation can cut off the replayed skills reminder (it sits right
+        // after the first user message). Re-inject it if the slice removed it;
+        // a surviving copy short-circuits the duplicate check.
+        replayPersistedSkillListing(result.messages, result.skillListing)
       }
 
       // Match coordinator mode to the resumed session's mode
@@ -5391,6 +5404,13 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
+      }
+      if (!options.forkSession) {
+        // Match the cwd the session's prompt was last rendered with, not the
+        // shell's tail cwd (see resolvePromptCwd).
+        restoreSessionCwd(result.promptCwd)
+        restorePromptContext(result.promptContext)
+        recordPromptCwd(getCwd())
       }
       restoreSessionStateFromLog(result, setAppState)
 

@@ -309,7 +309,7 @@ import {
   saveWorktreeState,
   getAgentTranscript,
 } from '../utils/sessionStorage.js';
-import { deserializeMessages } from '../utils/conversationRecovery.js';
+import { deserializeMessages, replayPersistedSkillListing } from '../utils/conversationRecovery.js';
 import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
 import { resetMicrocompactState } from '../services/compact/microCompact.js';
 import { runPostCompactCleanup, registerCompactCleanup } from '../services/compact/postCompactCleanup.js';
@@ -332,10 +332,12 @@ import {
   fileHistoryHasAnyChanges,
 } from '../utils/fileHistory.js';
 import { type AttributionState, incrementPromptCount } from '../utils/commitAttribution.js';
-import { recordAttributionSnapshot } from '../utils/sessionStorage.js';
+import { recordAttributionSnapshot, recordPromptCwd, resolvePromptCwd } from '../utils/sessionStorage.js';
 import {
   computeStandaloneAgentContext,
   restoreAgentFromSession,
+  restorePromptContext,
+  restoreSessionCwd,
   restoreSessionStateFromLog,
   restoreWorktreeForResume,
   exitRestoredWorktree,
@@ -2127,6 +2129,11 @@ export function REPL({
         // Deserialize messages to properly clean up the conversation
         // This filters unresolved tool uses and adds a synthetic assistant message if needed
         const messages = deserializeMessages(log.messages);
+        // Re-inject the initial skills reminder at its original position. It
+        // is an ephemeral attachment and is never persisted, so the in-session
+        // resume path needs the recorded copy too — otherwise the first
+        // request after /resume differs at the start of the first message.
+        replayPersistedSkillListing(messages, log.skillListing);
 
         // Match coordinator/normal mode to the resumed session
         if (feature('COORDINATOR_MODE')) {
@@ -2274,7 +2281,10 @@ export function REPL({
         if (entrypoint !== 'fork') {
           exitRestoredWorktree();
           restoreWorktreeForResume(log.worktreeSession);
+          restoreSessionCwd(resolvePromptCwd(log.messages, log.promptCwd));
+          restorePromptContext(log.promptContext);
           adoptResumedSessionFile();
+          recordPromptCwd(getCwd());
           void restoreRemoteAgentTasks({
             abortController: new AbortController(),
             getAppState: () => store.getState(),

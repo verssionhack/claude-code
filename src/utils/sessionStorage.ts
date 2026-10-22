@@ -16,7 +16,7 @@ import {
   writeFile,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -50,6 +50,8 @@ import {
   type FileHistorySnapshotMessage,
   type GoalState,
   type LogOption,
+  type PersistedPromptContext,
+  type PersistedSkillListing,
   type PersistedWorktreeSession,
   type SerializedMessage,
   sortLogs,
@@ -80,7 +82,11 @@ import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
-import { extractTag, isCompactBoundaryMessage } from './messages.js'
+import {
+  extractTag,
+  findLastCompactBoundaryIndex,
+  isCompactBoundaryMessage,
+} from './messages.js'
 import { sanitizePath } from './path.js'
 import {
   extractJsonStringField,
@@ -544,6 +550,17 @@ class Project {
   currentSessionAgentSetting: string | undefined
   currentSessionMode: 'coordinator' | 'normal' | undefined
   currentSessionGoal: GoalState | undefined
+  // Cwd baked into the env section of the system prompt. Only updated at
+  // render points (process start, resume, /compact) — a shell `cd` does not
+  // re-render the cached section, so the live cwd may differ.
+  currentSessionPromptCwd: string | undefined
+  // Environment-derived leading prompt tokens (system prompt sections,
+  // CLAUDE.md/date, git snapshot). Written at render points; replayed on
+  // resume so a changed cwd/date/repo state cannot force a re-prefill.
+  currentSessionPromptContext: PersistedPromptContext | undefined
+  // Initial skills reminder. Re-injected at the top of the transcript on
+  // resume, since the ephemeral attachment is never persisted as a message.
+  currentSessionSkillListing: PersistedSkillListing | undefined
   // Tri-state: undefined = never touched (don't write), null = exited worktree,
   // object = currently in worktree. reAppendSessionMetadata writes null so
   // --resume knows the session exited (vs. crashed while inside).
@@ -568,6 +585,13 @@ class Project {
     string,
     Array<{ entry: Entry; resolve: () => void }>
   >()
+  // Keys of the prompt-context / skill-listing entries last written to
+  // sessionFile. reAppendSessionMetadata runs on every resume/compaction/exit
+  // and must not append another ~30KB copy of unchanged state.
+  writtenPromptContextKey: string | undefined
+  writtenPromptContextFile: string | undefined
+  writtenSkillListingKey: string | undefined
+  writtenSkillListingFile: string | undefined
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private activeDrain: Promise<void> | null = null
   private FLUSH_INTERVAL_MS = 100
@@ -702,6 +726,10 @@ class Project {
   resetSessionFile(): void {
     this.sessionFile = null
     this.pendingEntries = []
+    this.writtenPromptContextKey = undefined
+    this.writtenPromptContextFile = undefined
+    this.writtenSkillListingKey = undefined
+    this.writtenSkillListingFile = undefined
   }
 
   /**
@@ -829,6 +857,15 @@ class Project {
         sessionId,
       })
     }
+    if (this.currentSessionPromptCwd) {
+      appendEntryToFile(this.sessionFile, {
+        type: 'prompt-cwd',
+        promptCwd: this.currentSessionPromptCwd,
+        sessionId,
+      })
+    }
+    this.writePromptContextIfChanged()
+    this.writeSkillListingIfChanged()
     if (this.currentSessionGoal) {
       appendEntryToFile(this.sessionFile, {
         type: 'goal',
@@ -858,6 +895,84 @@ class Project {
         timestamp: new Date().toISOString(),
       })
     }
+  }
+
+  /**
+   * Persist the cwd the system prompt env section is rendered with. Written
+   * immediately (not just cached) so a crash after a resume/compact doesn't
+   * lose it. No-ops on the file when the session file hasn't materialized yet;
+   * the cache is then flushed by materializeSessionFile's reAppend.
+   */
+  recordPromptCwd(cwd: string): void {
+    this.currentSessionPromptCwd = cwd
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
+    const sessionId = getSessionId() as UUID
+    if (!sessionId) return
+    appendEntryToFile(this.sessionFile, {
+      type: 'prompt-cwd',
+      promptCwd: cwd,
+      sessionId,
+    })
+  }
+
+  /**
+   * Persist the environment-derived leading prompt tokens. Called after the
+   * sections and context blocks for a render are final (first turn, resume,
+   * post-compact). Skipped when unchanged — the values are memoized per
+   * process, so this normally writes once per render point.
+   */
+  recordPromptContext(context: PersistedPromptContext): void {
+    this.currentSessionPromptContext = context
+    this.writePromptContextIfChanged()
+  }
+
+  private writePromptContextIfChanged(): void {
+    const context = this.currentSessionPromptContext
+    if (!context || !this.sessionFile || this.shouldSkipPersistence()) return
+    const key = promptContextKey(context)
+    // The file check matters for cross-directory resumes: the recorded
+    // metadata came from the source transcript, but the continued session is
+    // materialized into a new file that must receive its own copy.
+    if (
+      key === this.writtenPromptContextKey &&
+      this.sessionFile === this.writtenPromptContextFile
+    ) {
+      return
+    }
+    const sessionId = getSessionId() as UUID
+    if (!sessionId) return
+    this.writtenPromptContextKey = key
+    this.writtenPromptContextFile = this.sessionFile
+    appendEntryToFile(this.sessionFile, {
+      type: 'prompt-context',
+      ...context,
+      sessionId,
+    })
+  }
+
+  recordSkillListing(listing: PersistedSkillListing): void {
+    this.currentSessionSkillListing = listing
+    this.writeSkillListingIfChanged()
+  }
+
+  private writeSkillListingIfChanged(): void {
+    const listing = this.currentSessionSkillListing
+    if (!listing || !this.sessionFile || this.shouldSkipPersistence()) return
+    if (
+      listing.content === this.writtenSkillListingKey &&
+      this.sessionFile === this.writtenSkillListingFile
+    ) {
+      return
+    }
+    const sessionId = getSessionId() as UUID
+    if (!sessionId) return
+    this.writtenSkillListingKey = listing.content
+    this.writtenSkillListingFile = this.sessionFile
+    appendEntryToFile(this.sessionFile, {
+      type: 'skill-listing',
+      ...listing,
+      sessionId,
+    })
   }
 
   async flush(): Promise<void> {
@@ -1001,6 +1116,10 @@ class Project {
     // and create a metadata-only file despite --no-session-persistence.
     if (this.shouldSkipPersistence()) return
     this.ensureCurrentSessionFile()
+    // First materialization happens before any tool can change the shell cwd,
+    // so this is the cwd the first system prompt render uses. ??= keeps the
+    // value a resume/restore already recorded.
+    this.currentSessionPromptCwd ??= getCwd()
     // mode/agentSetting are cache-only pre-materialization; write them now.
     this.reAppendSessionMetadata()
     if (this.pendingEntries.length > 0) {
@@ -1217,6 +1336,15 @@ class Project {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'mode') {
       // Mode entries can always be appended
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'prompt-cwd') {
+      // Last-wins on read; can always be appended
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'prompt-context') {
+      // Last-wins on read; can always be appended
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'skill-listing') {
+      // Last-wins on read; can always be appended
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
       void this.enqueueWrite(sessionFile, entry)
@@ -2346,6 +2474,9 @@ export async function loadTranscriptFromFile(
       leafUuids,
       contentReplacements,
       worktreeStates,
+      promptCwds,
+      promptContexts,
+      skillListings,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2391,6 +2522,9 @@ export async function loadTranscriptFromFile(
       worktreeSession: worktreeStates.has(sessionId)
         ? worktreeStates.get(sessionId)
         : undefined,
+      promptCwd: promptCwds.get(sessionId),
+      promptContext: promptContexts.get(sessionId),
+      skillListing: skillListings.get(sessionId),
     }
   }
 
@@ -2848,6 +2982,13 @@ export function restoreSessionMetadata(meta: {
   prUrl?: string
   prRepository?: string
   goal?: GoalState
+  promptContext?: PersistedPromptContext
+  skillListing?: PersistedSkillListing
+  fullPath?: string
+  // Transcript the metadata was loaded from. Differs from fullPath for
+  // --resume <path.jsonl>, which has no LogOption (fullPath undefined) but
+  // still must not re-append entries already in that file.
+  sourceTranscriptPath?: string
 }): void {
   const project = getProject()
   // ??= so --name (cacheSessionTitle) wins over the resumed
@@ -2865,6 +3006,27 @@ export function restoreSessionMetadata(meta: {
   if (meta.prUrl) project.currentSessionPrUrl = meta.prUrl
   if (meta.prRepository) project.currentSessionPrRepository = meta.prRepository
   if (meta.goal) project.currentSessionGoal = meta.goal
+  // Already on disk in the source transcript — don't re-append it there. Only
+  // mark it written for the file it came from: a cross-directory resume
+  // materializes a NEW transcript that needs its own copy, while a resume of
+  // the same file must not accumulate duplicates. The --resume <path.jsonl>
+  // branch has no LogOption, hence sourceTranscriptPath.
+  const sourceFile = meta.sourceTranscriptPath ?? meta.fullPath
+  const writtenFile = sourceFile ? resolve(sourceFile) : undefined
+  if (meta.promptContext) {
+    project.currentSessionPromptContext = meta.promptContext
+    if (writtenFile) {
+      project.writtenPromptContextKey = promptContextKey(meta.promptContext)
+      project.writtenPromptContextFile = writtenFile
+    }
+  }
+  if (meta.skillListing) {
+    project.currentSessionSkillListing = meta.skillListing
+    if (writtenFile) {
+      project.writtenSkillListingKey = meta.skillListing.content
+      project.writtenSkillListingFile = writtenFile
+    }
+  }
 }
 
 /**
@@ -2881,6 +3043,9 @@ export function clearSessionMetadata(): void {
   project.currentSessionLastPrompt = undefined
   project.currentSessionAgentSetting = undefined
   project.currentSessionMode = undefined
+  project.currentSessionPromptCwd = undefined
+  project.currentSessionPromptContext = undefined
+  project.currentSessionSkillListing = undefined
   project.currentSessionGoal = undefined
   project.currentSessionWorktree = undefined
   project.currentSessionPrNumber = undefined
@@ -2898,6 +3063,41 @@ export function clearSessionMetadata(): void {
  */
 export function reAppendSessionMetadata(): void {
   getProject().reAppendSessionMetadata()
+}
+
+/**
+ * Record the cwd the system prompt environment section is rendered with.
+ * Call after the process cwd is final (resume restore, /compact) so the next
+ * resume can reproduce the same leading prompt tokens instead of using the
+ * shell's (possibly later) cwd.
+ */
+export function recordPromptCwd(cwd: string = getCwd()): void {
+  getProject().recordPromptCwd(cwd)
+}
+
+function promptContextKey(context: PersistedPromptContext): string {
+  return JSON.stringify([
+    context.promptProjectRoot,
+    context.systemPromptSections,
+    context.userContext,
+    context.systemContext,
+  ])
+}
+
+/**
+ * Persist the environment-derived leading prompt tokens for the next resume.
+ * Call once the system prompt sections and user/system context are resolved.
+ */
+export function recordPromptContext(context: PersistedPromptContext): void {
+  getProject().recordPromptContext(context)
+}
+
+/**
+ * Persist the initial skills reminder so a resumed process can re-inject the
+ * same bytes at the top of the conversation.
+ */
+export function recordSkillListing(listing: PersistedSkillListing): void {
+  getProject().recordSkillListing(listing)
 }
 
 export async function saveAgentName(
@@ -3055,6 +3255,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prUrls,
       prRepositories,
       modes,
+      promptCwds,
+      promptContexts,
+      skillListings,
       worktreeStates,
       goals,
       fileHistorySnapshots,
@@ -3105,6 +3308,13 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       agentColor: sessionId ? agentColors.get(sessionId) : log.agentColor,
       agentSetting: sessionId ? agentSettings.get(sessionId) : log.agentSetting,
       mode: sessionId ? (modes.get(sessionId) as LogOption['mode']) : log.mode,
+      promptCwd: (sessionId && promptCwds.get(sessionId)) ?? log.promptCwd,
+      promptContext: sessionId
+        ? (promptContexts.get(sessionId) ?? log.promptContext)
+        : log.promptContext,
+      skillListing: sessionId
+        ? (skillListings.get(sessionId) ?? log.skillListing)
+        : log.skillListing,
       worktreeSession:
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
@@ -3145,6 +3355,44 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
     // If loading fails, return the original log
     return log
   }
+}
+
+/**
+ * Resolve the cwd a resumed session's system prompt was last rendered with.
+ *
+ * The env section is a cached system-prompt section: it only re-renders on
+ * process start, resume, and /compact. A shell `cd` changes the cwd stamped on
+ * every transcript entry but does NOT re-render the prompt, so the tail entry's
+ * cwd is not a safe restore target — using it can move the one line the prefix
+ * cache depends on. Preference order:
+ *   1. The persisted `prompt-cwd` value (written at every render point; this
+ *      is exact for sessions resumed or compacted since it was introduced).
+ *   2. The last compact boundary, which is the newest known re-render point in
+ *      older transcripts; its cwd (or the first stamped entry after it) is the
+ *      cwd the post-compact prompt used.
+ *   3. The first entry's cwd — the launch directory of the process that
+ *      produced the chain, which is what the prompt used if it never reset.
+ */
+export function resolvePromptCwd(
+  messages: Message[],
+  persisted?: string,
+): string | undefined {
+  if (persisted) return persisted
+
+  const firstCwdFrom = (start: number): string | undefined => {
+    for (let i = start; i < messages.length; i++) {
+      const cwd = (messages[i] as { cwd?: unknown } | undefined)?.cwd
+      if (typeof cwd === 'string' && cwd.length > 0) return cwd
+    }
+    return undefined
+  }
+
+  const boundaryIndex = findLastCompactBoundaryIndex(messages)
+  if (boundaryIndex !== -1) {
+    const fromBoundary = firstCwdFrom(boundaryIndex)
+    if (fromBoundary) return fromBoundary
+  }
+  return firstCwdFrom(0)
 }
 
 /**
@@ -3210,14 +3458,17 @@ const METADATA_TYPE_MARKERS = [
   '"type":"agent-color"',
   '"type":"agent-setting"',
   '"type":"mode"',
+  '"type":"prompt-cwd"',
+  '"type":"prompt-context"',
+  '"type":"skill-listing"',
   '"type":"worktree-state"',
   '"type":"goal"',
   '"type":"goal-cleared"',
   '"type":"pr-link"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
-// Longest marker is 22 bytes; +1 for leading `{` = 23.
-const METADATA_PREFIX_BOUND = 25
+// Longest marker is 23 bytes ("prompt-context"); +1 for leading `{` = 24.
+const METADATA_PREFIX_BOUND = 26
 
 // null = carry spans whole chunk. Skips concat when carry provably isn't
 // a metadata line (markers sit at byte 1 after `{`).
@@ -3578,6 +3829,9 @@ export async function loadTranscriptFile(
   prUrls: Map<UUID, string>
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
+  promptCwds: Map<UUID, string>
+  promptContexts: Map<UUID, PersistedPromptContext>
+  skillListings: Map<UUID, PersistedSkillListing>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   goals: Map<UUID, GoalState>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
@@ -3599,6 +3853,9 @@ export async function loadTranscriptFile(
   const prUrls = new Map<UUID, string>()
   const prRepositories = new Map<UUID, string>()
   const modes = new Map<UUID, string>()
+  const promptCwds = new Map<UUID, string>()
+  const promptContexts = new Map<UUID, PersistedPromptContext>()
+  const skillListings = new Map<UUID, PersistedSkillListing>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
   const goals = new Map<UUID, GoalState>()
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
@@ -3697,6 +3954,20 @@ export async function loadTranscriptFile(
           agentSettings.set(entry.sessionId, entry.agentSetting)
         } else if (entry.type === 'mode' && entry.sessionId) {
           modes.set(entry.sessionId, entry.mode)
+        } else if (entry.type === 'prompt-cwd' && entry.sessionId) {
+          promptCwds.set(entry.sessionId, entry.promptCwd)
+        } else if (entry.type === 'prompt-context' && entry.sessionId) {
+          promptContexts.set(entry.sessionId, {
+            promptProjectRoot: entry.promptProjectRoot,
+            systemPromptSections: entry.systemPromptSections,
+            userContext: entry.userContext,
+            systemContext: entry.systemContext,
+          })
+        } else if (entry.type === 'skill-listing' && entry.sessionId) {
+          skillListings.set(entry.sessionId, {
+            content: entry.content,
+            skillCount: entry.skillCount,
+          })
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
         } else if (entry.type === 'goal' && entry.sessionId) {
@@ -3769,6 +4040,20 @@ export async function loadTranscriptFile(
         agentSettings.set(entry.sessionId, entry.agentSetting)
       } else if (entry.type === 'mode' && entry.sessionId) {
         modes.set(entry.sessionId, entry.mode)
+      } else if (entry.type === 'prompt-cwd' && entry.sessionId) {
+        promptCwds.set(entry.sessionId, entry.promptCwd)
+      } else if (entry.type === 'prompt-context' && entry.sessionId) {
+        promptContexts.set(entry.sessionId, {
+          promptProjectRoot: entry.promptProjectRoot,
+          systemPromptSections: entry.systemPromptSections,
+          userContext: entry.userContext,
+          systemContext: entry.systemContext,
+        })
+      } else if (entry.type === 'skill-listing' && entry.sessionId) {
+        skillListings.set(entry.sessionId, {
+          content: entry.content,
+          skillCount: entry.skillCount,
+        })
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
       } else if (entry.type === 'goal' && entry.sessionId) {
@@ -3905,6 +4190,9 @@ export async function loadTranscriptFile(
     prUrls,
     prRepositories,
     modes,
+    promptCwds,
+    promptContexts,
+    skillListings,
     worktreeStates,
     goals,
     fileHistorySnapshots,
@@ -3931,6 +4219,9 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
+  promptCwds: Map<UUID, string>
+  promptContexts: Map<UUID, PersistedPromptContext>
+  skillListings: Map<UUID, PersistedSkillListing>
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 }> {
@@ -4018,6 +4309,9 @@ export async function getLastSessionLog(
     attributionSnapshots,
     contentReplacements,
     goals,
+    promptCwds,
+    promptContexts,
+    skillListings,
     contextCollapseCommits,
     contextCollapseSnapshot,
   } = await loadSessionFile(sessionId)
@@ -4058,6 +4352,9 @@ export async function getLastSessionLog(
     ),
     worktreeSession: worktreeStates.get(sessionId),
     goal: goals.get(sessionId),
+    promptCwd: promptCwds.get(sessionId),
+    promptContext: promptContexts.get(sessionId),
+    skillListing: skillListings.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),

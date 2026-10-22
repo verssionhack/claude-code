@@ -4,12 +4,22 @@ import { dirname } from 'path'
 import {
   getMainLoopModelOverride,
   getSessionId,
+  setLastEmittedDate,
   setMainLoopModelOverride,
   setMainThreadAgentType,
   setOriginalCwd,
+  setProjectRoot,
+  setSystemPromptSectionCacheEntry,
   switchSession,
 } from '../bootstrap/state.js'
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
+import {
+  clearPersistedPromptContext,
+  getGitStatus,
+  getSystemContext,
+  getUserContext,
+  setPersistedPromptContext,
+} from '../context.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
 import type { AgentColorName } from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js'
@@ -25,6 +35,7 @@ import type {
   AttributionSnapshotMessage,
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
+  PersistedPromptContext,
   PersistedWorktreeSession,
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
@@ -40,6 +51,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
+import { getIsGit } from './git.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
 import { getPlansDirectory } from './plans.js'
@@ -51,6 +63,7 @@ import { setCwd } from './Shell.js'
 import {
   adoptResumedSessionFile,
   recordContentReplacement,
+  recordPromptCwd,
   resetSessionFilePointer,
   restoreSessionMetadata,
   saveMode,
@@ -316,7 +329,34 @@ type ResumeLoadResult = {
   prNumber?: number
   prUrl?: string
   prRepository?: string
+  // Working directory the system prompt env section was last rendered with.
+  promptCwd?: string
+  // Environment-derived leading prompt tokens recorded at the last render.
+  promptContext?: PersistedPromptContext
+  // Initial skills reminder, re-injected at the top on resume.
+  skillListing?: import('../types/logs.js').PersistedSkillListing
   goal?: import('../types/logs.js').GoalState
+}
+
+/**
+ * Drop every cache whose contents are derived from the process cwd.
+ *
+ * A resume (or worktree restore) can chdir after these were populated — the
+ * `-r` picker prefetches user/system context as soon as it renders, and an
+ * in-session /resume has been serving the outgoing session for a while. A
+ * stale CLAUDE.md chain or git snapshot in the first resumed request diverges
+ * from the cached prefix even when the env "Primary working directory" line is
+ * correct, so clear all of them, not just the memory-file cache.
+ */
+function clearCwdDerivedCaches(): void {
+  clearMemoryFileCaches()
+  clearSystemPromptSections()
+  clearPersistedPromptContext()
+  getUserContext.cache.clear?.()
+  getSystemContext.cache.clear?.()
+  getGitStatus.cache.clear?.()
+  getIsGit.cache.clear?.()
+  getPlansDirectory.cache.clear?.()
 }
 
 /**
@@ -363,11 +403,78 @@ export function restoreWorktreeForResume(
   // original project.
   restoreWorktreeSession(worktreeSession)
   // The /resume slash command calls this mid-session after caches have been
-  // populated against the old cwd. Cheap no-ops for the CLI-flag path
-  // (caches aren't populated yet there).
-  clearMemoryFileCaches()
-  clearSystemPromptSections()
-  getPlansDirectory.cache.clear?.()
+  // populated against the old cwd; the `-r` picker's prefetches do the same.
+  clearCwdDerivedCaches()
+}
+
+/**
+ * Restore the working directory the resumed conversation's system prompt was
+ * last rendered with (see resolvePromptCwd — not necessarily the shell's last
+ * cwd).
+ *
+ * Resuming in the launch directory rewrites the prompt's "Primary working
+ * directory" line, which changes the leading tokens and makes the inference
+ * server re-prefill the whole conversation. A worktree session restored above
+ * is authoritative and takes precedence.
+ */
+export function restoreSessionCwd(cwd: string | undefined): void {
+  if (getCurrentWorktreeSession()) return
+  if (!cwd) {
+    // In-session /resume without a recorded cwd: drop the outgoing session's
+    // replayed context so it cannot leak into the new one.
+    clearCwdDerivedCaches()
+    return
+  }
+  try {
+    // TOCTOU-safe existence check: throws ENOENT when the directory is gone.
+    process.chdir(cwd)
+  } catch {
+    clearCwdDerivedCaches()
+    return
+  }
+  setCwd(cwd)
+  // Project identity follows the session, not the launch directory: the
+  // auto-memory path and the skills discovered for the prompt are keyed on
+  // projectRoot, so leaving it at the launch cwd rewrites those sections.
+  setProjectRoot(cwd)
+  clearCwdDerivedCaches()
+}
+
+/**
+ * Replay the environment-derived prompt prefix recorded by the previous
+ * process (see PersistedPromptContext). Must run after restoreSessionCwd,
+ * which clears the caches this function populates.
+ *
+ * When the transcript predates the snapshot (no prompt-context entry), the
+ * prefix is re-derived — restoreSessionCwd has already fixed the cwd and
+ * project root, so only genuinely changed inputs (date, git state, CLAUDE.md
+ * edits) can still diverge.
+ */
+export function restorePromptContext(
+  context: PersistedPromptContext | undefined,
+): void {
+  if (!context) return
+  if (context.promptProjectRoot) {
+    setProjectRoot(context.promptProjectRoot)
+  }
+  // Transcripts are user-visible files and may be truncated or hand-edited;
+  // treat a partial entry as "no snapshot" rather than throwing on resume.
+  for (const [name, value] of context.systemPromptSections ?? []) {
+    setSystemPromptSectionCacheEntry(name, value)
+  }
+  setPersistedPromptContext({
+    userContext: context.userContext ?? {},
+    systemContext: context.systemContext ?? {},
+  })
+  // The replayed conversation keeps the date it was rendered with. Seed the
+  // date latch with that value so a resume on a later day still emits the
+  // date_change attachment at the tail — the model learns the new date without
+  // rewriting the cached prefix (the same mechanism used for midnight rollover).
+  const persistedDate =
+    context.userContext?.currentDate?.match(/(\d{4}-\d{2}-\d{2})/)?.[1]
+  if (persistedDate) {
+    setLastEmittedDate(persistedDate)
+  }
 }
 
 /**
@@ -504,6 +611,12 @@ export async function processResumedConversation(
     // from the transcript) so if the directory is gone we can override
     // the cache before adoptResumedSessionFile writes it.
     restoreWorktreeForResume(result.worktreeSession)
+    // A plain session's shell may have cd'd mid-conversation; match the
+    // directory its system prompt was last rendered with.
+    restoreSessionCwd(result.promptCwd)
+    // Replay the recorded leading context (sections, CLAUDE.md/date, git
+    // snapshot) so the prefix is byte-identical to the previous process.
+    restorePromptContext(result.promptContext)
 
     // Point sessionFile at the resumed transcript and re-append metadata
     // now. resetSessionFilePointer above nulled it (so the old fresh-session
@@ -512,6 +625,9 @@ export async function processResumedConversation(
     // useLogMessages populates a *new* file via recordTranscript on REPL
     // mount; the normal lazy-materialize path is correct there.
     adoptResumedSessionFile()
+    // Capture the cwd this process's prompt will render with. Written after
+    // adopt so it lands in the resumed file rather than the pre-switch one.
+    recordPromptCwd(getCwd())
   }
 
   // Restore context-collapse commit log + staged snapshot. The interactive
