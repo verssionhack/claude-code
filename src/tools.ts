@@ -95,6 +95,7 @@ const GoalTool = feature('GOAL')
   : null
 import { LocalMemoryRecallTool } from '@claude-code-best/builtin-tools/tools/LocalMemoryRecallTool/LocalMemoryRecallTool.js'
 import { VaultHttpFetchTool } from '@claude-code-best/builtin-tools/tools/VaultHttpFetchTool/VaultHttpFetchTool.js'
+import { SystemoneTool } from '@claude-code-best/builtin-tools/tools/SystemoneTool/SystemoneTool.js'
 import { TaskCreateTool } from '@claude-code-best/builtin-tools/tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from '@claude-code-best/builtin-tools/tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from '@claude-code-best/builtin-tools/tools/TaskUpdateTool/TaskUpdateTool.js'
@@ -241,6 +242,7 @@ export function getAllBaseTools(): Tools {
     EnterPlanModeTool,
     LocalMemoryRecallTool,
     VaultHttpFetchTool,
+    SystemoneTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(GoalTool ? [GoalTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),

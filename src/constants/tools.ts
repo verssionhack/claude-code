@@ -12,6 +12,7 @@ import { TODO_WRITE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/Todo
 import { GREP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GrepTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFetchTool/prompt.js'
 import { LIST_MODEL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ListModelTool/ListModelTool.js'
+import { SYSTEMONE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SystemoneTool/constants.js'
 import { GLOB_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/GlobTool/prompt.js'
 import { SHELL_TOOL_NAMES } from '../utils/shell/shellToolUtils.js'
 import { FILE_EDIT_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/FileEditTool/constants.js'
@@ -75,6 +76,7 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   TODO_WRITE_TOOL_NAME,
   GREP_TOOL_NAME,
   WEB_FETCH_TOOL_NAME,
+  SYSTEMONE_TOOL_NAME,
   GLOB_TOOL_NAME,
   ...SHELL_TOOL_NAMES,
   FILE_EDIT_TOOL_NAME,
@@ -163,6 +165,7 @@ export const CORE_TOOLS = new Set([
   WEB_FETCH_TOOL_NAME, // 'WebFetch'
   WEB_SEARCH_TOOL_NAME, // 'WebSearch'
   LIST_MODEL_TOOL_NAME, // 'ListModel'
+  SYSTEMONE_TOOL_NAME, // 'Systemone'
   // Code intelligence
   LSP_TOOL_NAME, // 'LSP'
   // Skills
