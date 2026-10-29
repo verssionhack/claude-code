@@ -32,6 +32,17 @@ function isProactiveAutomationEnabled(): boolean {
   return mod.isProactiveActive()
 }
 
+// Pure decision, exported for tests: sleep is withheld only when the user has
+// paused an ACTIVE autonomous session (they pressed Esc and expect control
+// back). A normal session (never activated) or an active-but-unpaused one may
+// sleep.
+export function proactiveSleepBlocked(
+  active: boolean,
+  paused: boolean,
+): boolean {
+  return active && paused
+}
+
 function isProactiveSleepAllowed(): boolean {
   if (!(feature('PROACTIVE') || feature('KAIROS'))) {
     return true
@@ -39,17 +50,20 @@ function isProactiveSleepAllowed(): boolean {
 
   const mod =
     require('src/proactive/index.js') as typeof import('src/proactive/index.js')
-  return mod.isProactiveActive()
+  return !proactiveSleepBlocked(
+    mod.isProactiveActive(),
+    mod.isProactivePaused(),
+  )
 }
 
-function hasQueuedWakeSignal(): boolean {
+function getQueueLength(): number {
   const queue =
     require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
-  return queue.hasCommandsInQueue()
+  return queue.getCommandQueue().length
 }
 
-function shouldInterruptSleep(): boolean {
-  return !isProactiveSleepAllowed() || hasQueuedWakeSignal()
+function hasNewQueuedWork(baseline: number): boolean {
+  return getQueueLength() > baseline
 }
 
 export const SleepTool = buildTool({
@@ -103,9 +117,11 @@ export const SleepTool = buildTool({
   },
 
   async call(input: SleepInput, context) {
-    // Don't enter sleep if proactive was disabled or new work arrived while
-    // the model was deciding to wait.
-    if (shouldInterruptSleep()) {
+    // Don't enter sleep if proactive automation was disabled while the model
+    // was deciding to wait. A non-empty command queue does NOT cancel the
+    // sleep: work that was already queued is processed on the next turn, and
+    // only NEW work arriving mid-sleep wakes it early.
+    if (!isProactiveSleepAllowed()) {
       return {
         data: {
           slept_seconds: 0,
@@ -117,6 +133,7 @@ export const SleepTool = buildTool({
     const { duration_seconds } = input
     const startTime = Date.now()
     const sleepUntil = startTime + duration_seconds * 1000
+    const queueBaseline = getQueueLength()
 
     if (isProactiveAutomationEnabled()) {
       notifyAutomationStateChanged({
@@ -130,7 +147,7 @@ export const SleepTool = buildTool({
     try {
       await new Promise<void>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | null = null
-        let wakeCheck: ReturnType<typeof setInterval> | null = null
+        const unsubscribes: Array<() => void> = []
         let settled = false
 
         const cleanup = () => {
@@ -138,9 +155,8 @@ export const SleepTool = buildTool({
             clearTimeout(timer)
             timer = null
           }
-          if (wakeCheck !== null) {
-            clearInterval(wakeCheck)
-            wakeCheck = null
+          for (const unsubscribe of unsubscribes.splice(0)) {
+            unsubscribe()
           }
           context.abortController.signal.removeEventListener('abort', onAbort)
         }
@@ -174,13 +190,44 @@ export const SleepTool = buildTool({
           once: true,
         })
 
-        // Poll proactive state and the shared command queue so new work can
-        // wake Sleep without waiting for the full duration.
+        // Wake instantly when new work lands in the shared command queue
+        // after the sleep started, or proactive automation is disabled
+        // mid-sleep. Optional-call: test mocks of these modules may lack
+        // the subscribe exports.
+        const queue =
+          require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
+        const queueUnsub = queue.subscribeToCommandQueue?.(() => {
+          if (hasNewQueuedWork(queueBaseline)) interrupt()
+        })
+        if (queueUnsub) {
+          unsubscribes.push(queueUnsub)
+        }
+
+        if (isProactiveAutomationEnabled()) {
+          const proactive =
+            require('src/proactive/index.js') as typeof import('src/proactive/index.js')
+          const proactiveUnsub = proactive.subscribeToProactiveChanges?.(() => {
+            if (!isProactiveSleepAllowed()) interrupt()
+          })
+          if (proactiveUnsub) {
+            unsubscribes.push(proactiveUnsub)
+          }
+        }
+
+        // Fallback poll in case a change signal never fires (e.g. a test
+        // mock of the queue module without event support).
+        let wakeCheck: ReturnType<typeof setInterval> | null = null
         wakeCheck = setInterval(() => {
-          if (shouldInterruptSleep()) {
+          if (!isProactiveSleepAllowed() || hasNewQueuedWork(queueBaseline)) {
             interrupt()
           }
         }, SLEEP_WAKE_CHECK_INTERVAL_MS)
+        unsubscribes.push(() => {
+          if (wakeCheck !== null) {
+            clearInterval(wakeCheck)
+            wakeCheck = null
+          }
+        })
       })
       return {
         data: {

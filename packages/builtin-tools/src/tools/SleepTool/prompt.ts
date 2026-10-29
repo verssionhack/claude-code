@@ -6,6 +6,8 @@ export const DESCRIPTION = 'Wait for a specified duration'
 
 export const SLEEP_TOOL_PROMPT = `Wait for a specified duration. The user can interrupt the sleep at any time.
 
+New work arriving during the sleep (queued commands, task notifications) wakes it early, so you can wait on a background task without polling.
+
 Use this when the user tells you to sleep or rest, when you have nothing to do, or when you're waiting for something.
 
 You may receive <${TICK_TAG}> prompts — these are periodic check-ins. Look for useful work to do before sleeping.
