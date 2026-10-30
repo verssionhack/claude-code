@@ -1757,26 +1757,37 @@ async function* queryModel(
       }
     }
 
-    // /thinking override on self-hosted endpoints (llama.cpp and compatible):
-    // the Claude-specific modelSupportsThinking() check above never matches
-    // local model names, so force the thinking field (the server's
-    // anthropic->OAI converter maps budget_tokens to a reasoning budget) and
-    // toggle chat_template_kwargs.enable_thinking, which llama.cpp applies at
-    // the chat-template level.
+    // Self-hosted endpoints (llama.cpp, ninfer, and compatible): local model
+    // names never match the Claude-specific modelSupportsThinking() check
+    // above, so the `thinking` field can be left unset for the state the user
+    // asked for. Emit an explicit thinking field the server's anthropic
+    // adapter can honor (type:"disabled" turns thinking off; budget_tokens
+    // maps to a reasoning budget) plus the llama.cpp-style
+    // chat_template_kwargs.enable_thinking, applied at the template level.
     let chatTemplateKwargs: { enable_thinking: boolean } | undefined
-    if (
-      options.thinkingOverride &&
-      getAPIProvider() === 'firstParty' &&
-      !isFirstPartyAnthropicBaseUrl()
-    ) {
-      const { enabled, budgetTokens } = options.thinkingOverride
+    if (getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
+      const enabled = options.thinkingOverride
+        ? options.thinkingOverride.enabled
+        : thinkingEnabled
       chatTemplateKwargs = { enable_thinking: enabled }
-      if (enabled && hasThinking) {
+      if (!enabled) {
+        // Off (via /thinking off or /config "no thinking"): no block above sets
+        // `thinking`, so it would be omitted and the server would keep its own
+        // default (thinking on). Send an explicit disabled config instead.
         thinking = {
-          budget_tokens: Math.min(
-            maxOutputTokens - 1,
-            budgetTokens ?? getMaxThinkingTokensForModel(options.model),
-          ),
+          type: 'disabled',
+        } satisfies BetaMessageStreamParams['thinking']
+      } else {
+        // On: use a concrete reasoning budget rather than adaptive, which
+        // self-hosted backends do not implement.
+        const budget =
+          options.thinkingOverride?.budgetTokens ??
+          (thinkingConfig.type === 'enabled'
+            ? thinkingConfig.budgetTokens
+            : undefined) ??
+          getMaxThinkingTokensForModel(options.model)
+        thinking = {
+          budget_tokens: Math.min(maxOutputTokens - 1, budget),
           type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
@@ -1885,6 +1896,7 @@ async function* queryModel(
         }),
       ...extraBodyParams,
       ...samplingParams,
+      ...(chatTemplateKwargs && { chat_template_kwargs: chatTemplateKwargs }),
       ...(Object.keys(outputConfig).length > 0 && {
         output_config: outputConfig,
       }),
