@@ -27,6 +27,7 @@ const {
   convertEffortValueToLevel,
   getEffortLevelDescription,
   resolvePickerEffortPersistence,
+  resolveRequestEffort,
   EFFORT_LEVELS,
 } = await import('src/utils/effort.js')
 
@@ -346,5 +347,39 @@ describe('modelSupportsXhighEffort', () => {
   test('returns true for unknown models', async () => {
     const { modelSupportsXhighEffort } = await import('src/utils/effort.js')
     expect(modelSupportsXhighEffort('some-random-model')).toBe(true)
+  })
+})
+
+// ─── resolveRequestEffort ──────────────────────────────────────────────
+
+describe('resolveRequestEffort', () => {
+  const MODEL = 'claude-sonnet-4-6'
+
+  afterEach(() => {
+    delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  })
+
+  test('omits effort entirely when thinking is disabled', () => {
+    // Explicit session effort
+    expect(resolveRequestEffort(MODEL, 'xhigh', false)).toBeUndefined()
+    // Numeric value
+    expect(resolveRequestEffort(MODEL, 77, false)).toBeUndefined()
+    // Even a hard env override is suppressed
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
+    expect(resolveRequestEffort(MODEL, 'xhigh', false)).toBeUndefined()
+  })
+
+  test('resolves the session effort when thinking is enabled', () => {
+    expect(resolveRequestEffort(MODEL, 'xhigh', true)).toBe('xhigh')
+  })
+
+  test('falls through to the env override when thinking is enabled', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'low'
+    expect(resolveRequestEffort(MODEL, 'xhigh', true)).toBe('low')
+  })
+
+  test('respects CLAUDE_CODE_EFFORT_LEVEL=unset when thinking is enabled', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'unset'
+    expect(resolveRequestEffort(MODEL, 'xhigh', true)).toBeUndefined()
   })
 })

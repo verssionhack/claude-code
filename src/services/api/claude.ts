@@ -69,7 +69,7 @@ import {
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
-import { resolveAppliedEffort } from '../../utils/effort.js'
+import { resolveRequestEffort } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
@@ -1078,6 +1078,14 @@ async function* queryModel(
       : { type: 'disabled' }
   }
 
+  // Single source of truth for "thinking enabled for this request": the
+  // startup thinkingConfig (which /config "no thinking" sets to disabled via
+  // alwaysThinkingEnabled=false), the /thinking override applied above, and
+  // the CLAUDE_CODE_DISABLE_THINKING env switch.
+  const thinkingEnabled =
+    thinkingConfig.type !== 'disabled' &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
+
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.
@@ -1563,7 +1571,13 @@ async function* queryModel(
     }
   }
 
-  const effort = resolveAppliedEffort(options.model, options.effortValue)
+  // When thinking is off, skip the effort parameter (and the effort beta
+  // header) entirely — see resolveRequestEffort.
+  const effort = resolveRequestEffort(
+    options.model,
+    options.effortValue,
+    thinkingEnabled,
+  )
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
     // Exclude defer_loading tools from the hash -- the API strips them from the
@@ -1665,13 +1679,15 @@ async function* queryModel(
       ...((extraBodyParams.output_config as BetaOutputConfig) ?? {}),
     }
 
-    configureEffortParams(
-      effort,
-      outputConfig,
-      extraBodyParams,
-      betasParams,
-      options.model,
-    )
+    if (thinkingEnabled) {
+      configureEffortParams(
+        effort,
+        outputConfig,
+        extraBodyParams,
+        betasParams,
+        options.model,
+      )
+    }
 
     configureTaskBudgetParams(
       options.taskBudget,
@@ -1698,9 +1714,7 @@ async function* queryModel(
       options.maxOutputTokensOverride ||
       getMaxOutputTokensForModel(options.model)
 
-    const hasThinking =
-      thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
+    const hasThinking = thinkingEnabled
     let thinking: BetaMessageStreamParams['thinking'] | undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
