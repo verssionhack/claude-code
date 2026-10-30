@@ -143,7 +143,9 @@ import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
-import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
+import { buildEffectiveSystemPrompt, type SystemPrompt } from '../utils/systemPrompt.js';
+import { getLastCacheSafeParams } from '../utils/cacheSafeParamsSlot.js';
+import { buildDefaultSystemPrompt, recordDefaultSystemPromptContext } from '../utils/queryContext.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
@@ -3080,15 +3082,30 @@ export function REPL({
       const toolUseContext = getToolUseContext(messagesRef.current, [], new AbortController(), mainLoopModel);
 
       const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
-        getSystemPrompt(
-          toolUseContext.options.tools,
-          mainLoopModel,
-          Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
-          toolUseContext.options.mcpClients,
-        ),
+        customSystemPrompt === undefined
+          ? buildDefaultSystemPrompt({
+              tools: toolUseContext.options.tools,
+              mainLoopModel,
+              additionalWorkingDirectories: Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
+              mcpClients: toolUseContext.options.mcpClients,
+            })
+          : getSystemPrompt(
+              toolUseContext.options.tools,
+              mainLoopModel,
+              Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
+              toolUseContext.options.mcpClients,
+            ),
         getUserContext(),
         getSystemContext(),
       ]);
+      if (customSystemPrompt === undefined) {
+        recordDefaultSystemPromptContext({
+          defaultSystemPrompt,
+          userContext,
+          systemContext,
+          mcpClients: toolUseContext.options.mcpClients,
+        });
+      }
 
       const systemPrompt = buildEffectiveSystemPrompt({
         mainThreadAgentDefinition,
@@ -3484,15 +3501,37 @@ export function REPL({
         feature('TRANSCRIPT_CLASSIFIER')
           ? checkAndDisableAutoModeIfNeeded(toolPermissionContext, setAppState, store.getState().fastMode)
           : undefined,
-        getSystemPrompt(
-          freshTools,
-          mainLoopModelParam,
-          Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
-          freshMcpClients,
-        ),
+        // Reuse the assembled prompt until the next render point instead of
+        // re-rendering it every turn: any drift in the leading bytes (static
+        // sections, plugin/output-style load, a resumed process) makes the
+        // inference server re-prefill the whole conversation.
+        customSystemPrompt === undefined
+          ? buildDefaultSystemPrompt({
+              tools: freshTools,
+              mainLoopModel: mainLoopModelParam,
+              additionalWorkingDirectories: Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
+              mcpClients: freshMcpClients,
+            })
+          : getSystemPrompt(
+              freshTools,
+              mainLoopModelParam,
+              Array.from(toolPermissionContext.additionalWorkingDirectories.keys()),
+              freshMcpClients,
+            ),
         getUserContext(),
         getSystemContext(),
       ]);
+      // Record the leading prefix (and its assembled bytes) so a later
+      // process replays it verbatim instead of re-deriving environment,
+      // cwd or repo state into a different prefix.
+      if (customSystemPrompt === undefined) {
+        recordDefaultSystemPromptContext({
+          defaultSystemPrompt,
+          userContext: baseUserContext,
+          systemContext,
+          mcpClients: freshMcpClients,
+        });
+      }
       const userContext = {
         ...baseUserContext,
         ...getCoordinatorUserContext(freshMcpClients, isScratchpadEnabled() ? getScratchpadDir() : undefined),
@@ -6589,30 +6628,50 @@ export function REPL({
                       const newAbortController = createAbortController();
                       const context = getToolUseContext(compactMessages, [], newAbortController, mainLoopModel);
 
-                      const appState = context.getAppState();
-                      const defaultSysPrompt = await getSystemPrompt(
-                        context.options.tools,
-                        context.options.mainLoopModel,
-                        Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys()),
-                        context.options.mcpClients,
-                      );
-                      const systemPrompt = buildEffectiveSystemPrompt({
-                        mainThreadAgentDefinition: undefined,
-                        toolUseContext: context,
-                        customSystemPrompt: context.options.customSystemPrompt,
-                        defaultSystemPrompt: defaultSysPrompt,
-                        appendSystemPrompt: context.options.appendSystemPrompt,
-                      });
-                      const [userContext, systemContext] = await Promise.all([getUserContext(), getSystemContext()]);
+                      // The summary fork piggybacks on the main conversation's cached
+                      // prefix, so prefer the exact bytes the main loop sent (captured
+                      // after each turn). The rebuild below hardcodes
+                      // mainThreadAgentDefinition: undefined, so an agent-persona or
+                      // coordinator session would have sent a prompt the main thread
+                      // never sent — re-prefilling the whole conversation to summarize it.
+                      const savedCacheSafeParams = getLastCacheSafeParams();
+                      let summarySystemPrompt: SystemPrompt;
+                      let summaryUserContext: { [k: string]: string };
+                      let summarySystemContext: { [k: string]: string };
+                      if (savedCacheSafeParams) {
+                        summarySystemPrompt = savedCacheSafeParams.systemPrompt;
+                        summaryUserContext = savedCacheSafeParams.userContext;
+                        summarySystemContext = savedCacheSafeParams.systemContext;
+                      } else {
+                        const appState = context.getAppState();
+                        const defaultSysPrompt = await buildDefaultSystemPrompt({
+                          tools: context.options.tools,
+                          mainLoopModel: context.options.mainLoopModel,
+                          additionalWorkingDirectories: Array.from(
+                            appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+                          ),
+                          mcpClients: context.options.mcpClients,
+                        });
+                        summarySystemPrompt = buildEffectiveSystemPrompt({
+                          mainThreadAgentDefinition: undefined,
+                          toolUseContext: context,
+                          customSystemPrompt: context.options.customSystemPrompt,
+                          defaultSystemPrompt: defaultSysPrompt,
+                          appendSystemPrompt: context.options.appendSystemPrompt,
+                        });
+                        const [userContext, systemContext] = await Promise.all([getUserContext(), getSystemContext()]);
+                        summaryUserContext = userContext;
+                        summarySystemContext = systemContext;
+                      }
 
                       const result = await partialCompactConversation(
                         compactMessages,
                         messageIndex,
                         context,
                         {
-                          systemPrompt,
-                          userContext,
-                          systemContext,
+                          systemPrompt: summarySystemPrompt,
+                          userContext: summaryUserContext,
+                          systemContext: summarySystemContext,
                           toolUseContext: context,
                           forkContextMessages: compactMessages,
                         },

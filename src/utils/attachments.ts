@@ -161,6 +161,10 @@ import {
   getLastEmittedDate,
   setLastEmittedDate,
   getKairosActive,
+  getLatchedEffort,
+  isEffortLatchSeeded,
+  getLastEffortAnnounced,
+  setLastEffortAnnounced,
 } from '../bootstrap/state.js'
 import type { QuerySource } from '../constants/querySource.js'
 import {
@@ -210,6 +214,13 @@ const sessionTranscriptModule = feature('KAIROS')
   ? (require('../services/sessionTranscript/sessionTranscript.js') as typeof import('../services/sessionTranscript/sessionTranscript.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
+import {
+  convertEffortValueToLevel,
+  fromLatchedEffort,
+  getLiveEffortLevel,
+  type EffortLevel,
+  type EffortValue,
+} from './effort.js'
 import { hasUltrathinkKeyword, isUltrathinkEnabled } from './thinking.js'
 import {
   tokenCountFromLastAPIResponse,
@@ -711,6 +722,10 @@ export type Attachment =
       level: 'high'
     }
   | {
+      type: 'effort_change'
+      level: EffortLevel
+    }
+  | {
       type: 'deferred_tools_delta'
       addedNames: string[]
       addedLines: string[]
@@ -885,6 +900,15 @@ export async function getAttachments(
     ),
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
+    ),
+    maybe('effort_change', () =>
+      Promise.resolve(
+        getEffortChangeAttachment(
+          context.options.mainLoopModel,
+          context.getAppState().effortValue,
+          isMainThread,
+        ),
+      ),
     ),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
@@ -1504,6 +1528,42 @@ function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   }
   logEvent('tengu_ultrathink', {})
   return [{ type: 'ultrathink_effort', level: 'high' }]
+}
+
+/**
+ * Announce an effort-level change when the wire value can't follow it.
+ *
+ * output_config.effort sits at the head of the server-side prompt-cache key,
+ * so mid-session changes bust the entire conversation. resolvePinnedRequestEffort
+ * keeps the wire value stable; this function carries the live level as a tail
+ * attachment (same position/role as date_change) so the model learns the
+ * change without the prefix shifting. The attachment fires once per change
+ * (keyed on lastEffortAnnounced in bootstrap/state) and is reset at render
+ * points along with the latch itself.
+ *
+ * Only main-thread queries (isMainThread) are checked — subagents always
+ * send their own live effort, so no divergence exists to announce.
+ */
+export function getEffortChangeAttachment(
+  model: string,
+  appStateEffort: EffortValue | undefined,
+  isMainThread: boolean,
+): Attachment[] {
+  if (!isMainThread) return []
+  const liveLevel = getLiveEffortLevel(model, appStateEffort)
+  if (liveLevel === null) return []
+  // Only meaningful when the pin has been seeded. A pin of "no param" still
+  // has wire semantics: the API applies its 'high' default, so a live move
+  // off 'high' is a divergence worth announcing.
+  if (!isEffortLatchSeeded()) return []
+  const pinned = fromLatchedEffort(getLatchedEffort())
+  const pinnedLevel =
+    pinned === undefined ? 'high' : convertEffortValueToLevel(pinned)
+  if (liveLevel === pinnedLevel) return []
+  const lastAnnounced = getLastEffortAnnounced()
+  if (lastAnnounced === liveLevel) return []
+  setLastEffortAnnounced(liveLevel)
+  return [{ type: 'effort_change', level: liveLevel }]
 }
 
 // Exported for compact.ts — the gate must be identical at both call sites.

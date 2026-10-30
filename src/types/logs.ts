@@ -174,6 +174,15 @@ export type PersistedPromptContext = {
   systemPromptSections: Array<[string, string | null]>
   userContext: Record<string, string>
   systemContext: Record<string, string>
+  // The assembled default system prompt this render point produced. Section
+  // values are replayed individually, but the static sections around them are
+  // re-rendered in the new process (output style, tool guidance, feature
+  // gates); replaying the assembled array keeps the leading bytes identical
+  // even when one of those would render differently.
+  renderedSystemPrompt?: string[]
+  // Connected MCP server names the rendered prompt was produced with; a
+  // changed set legitimately re-renders the uncached instructions section.
+  renderedSystemPromptMcpKey?: string
 }
 
 export type PromptContextMessage = PersistedPromptContext & {

@@ -4615,6 +4615,18 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'effort_change': {
+      // The wire output_config.effort is pinned for the session (it sits at
+      // the head of the server-side cache key), so a mid-session /effort
+      // change arrives through this tail attachment instead. The
+      // instruction persists for the rest of the conversation.
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: `The user has changed the reasoning effort level to: ${attachment.level}. Apply this level for the remainder of the conversation, overriding any earlier effort instruction.`,
+          isMeta: true,
+        }),
+      ])
+    }
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {

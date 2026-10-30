@@ -20,10 +20,13 @@ import {
 import type { Message } from '../../types/message.js'
 import { count } from '../../utils/array.js'
 import {
+  type CacheSafeParams,
   createCacheSafeParams,
   createSubagentContext,
   runForkedAgent,
 } from '../../utils/forkedAgent.js'
+import { getLastCacheSafeParams } from '../../utils/cacheSafeParamsSlot.js'
+import { buildDefaultSystemPrompt } from '../../utils/queryContext.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   type REPLHookContext,
@@ -414,25 +417,59 @@ export async function manuallyExtractSessionMemory(
       memoryPath,
     )
 
-    // Get system prompt for cache-safe params
-    const { tools, mainLoopModel } = toolUseContext.options
-    const [rawSystemPrompt, userContext, systemContext] = await Promise.all([
-      getSystemPrompt(tools, mainLoopModel),
-      getUserContext(),
-      getSystemContext(),
-    ])
-    const systemPrompt = asSystemPrompt(rawSystemPrompt)
-
-    // Run session memory extraction using runForkedAgent
-    await runForkedAgent({
-      promptMessages: [createUserMessage({ content: userPrompt })],
-      cacheSafeParams: {
-        systemPrompt,
+    // Cache-safe params for the extraction fork.
+    //
+    // Prefer the post-turn snapshot, the same source the automatic path above
+    // uses via createCacheSafeParams, so the fork sends the exact bytes the
+    // main loop sent. The old rebuild called getSystemPrompt(tools, model),
+    // dropping additionalWorkingDirectories and mcpClients, and never passed
+    // the result through buildEffectiveSystemPrompt — so it sent the raw
+    // default prompt while the main thread had sent the effective one (agent
+    // persona, --append-system-prompt, coordinator mode all missing). Each
+    // extraction re-prefilled the very conversation it was reading.
+    const saved = getLastCacheSafeParams()
+    let cacheSafeParams: CacheSafeParams
+    if (saved) {
+      cacheSafeParams = {
+        systemPrompt: saved.systemPrompt,
+        userContext: saved.userContext,
+        systemContext: saved.systemContext,
+        toolUseContext: setupContext,
+        forkContextMessages: messages,
+      }
+    } else {
+      // No post-turn snapshot (first turn, or after /clear). Render fresh —
+      // deliberately getSystemPrompt, not buildDefaultSystemPrompt: this
+      // fork's resolved tools/MCP set may differ from the main thread's and
+      // no compaction cleanup follows, so writing the pin from here could
+      // hand the main thread a prompt it never sent.
+      const appState = toolUseContext.getAppState()
+      const [defaultSystemPrompt, userContext, systemContext] =
+        await Promise.all([
+          getSystemPrompt(
+            toolUseContext.options.tools,
+            toolUseContext.options.mainLoopModel,
+            Array.from(
+              appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+            ),
+            toolUseContext.options.mcpClients,
+          ),
+          getUserContext(),
+          getSystemContext(),
+        ])
+      cacheSafeParams = {
+        systemPrompt: asSystemPrompt(defaultSystemPrompt),
         userContext,
         systemContext,
         toolUseContext: setupContext,
         forkContextMessages: messages,
-      },
+      }
+    }
+
+    // Run session memory extraction using runForkedAgent
+    await runForkedAgent({
+      promptMessages: [createUserMessage({ content: userPrompt })],
+      cacheSafeParams,
       canUseTool: createMemoryFileCanUseTool(memoryPath),
       querySource: 'session_memory',
       forkLabel: 'session_memory_manual',

@@ -201,6 +201,14 @@ type State = {
   directConnectServerUrl: string | undefined
   // System prompt section cache state
   systemPromptSectionCache: Map<string, string | null>
+  // Fully rendered default system prompt for this render point. Section values
+  // are cached individually, but the static sections around them are rendered
+  // fresh on every request; reusing the assembled array keeps the leading
+  // bytes stable within a process and across a resumed one.
+  renderedSystemPrompt: string[] | null
+  // Connected MCP server names renderedSystemPrompt was produced with, so a
+  // connection change can re-render the (uncached) instructions section.
+  renderedSystemPromptMcpKey: string
   // Last date emitted to the model (for detecting midnight date changes)
   lastEmittedDate: string | null
   // Additional directories from --add-dir flag (for CLAUDE.md loading)
@@ -235,6 +243,26 @@ type State = {
   // microcompact is first enabled, keep sending the header so mid-session
   // GrowthBook/settings toggles don't bust the prompt cache.
   cacheEditingHeaderLatched: boolean | null
+  // Latched output_config.effort wire value. output_config is request-level
+  // config that sits at the head of the server-side cache key (upstream of
+  // tools/system/messages), so changing effort mid-session re-prefills the
+  // whole conversation — unlike beta headers there is no sticky latch that
+  // fits, because the value itself (not just its presence) is what varies.
+  // Instead: pin the wire value at the first main-thread request that has
+  // one, carry later changes as a tail attachment (effort_change in
+  // attachments.ts), and re-sync the latch at render points
+  // (/clear, /compact, resume) where the cache is rewritten anyway.
+  // Main-thread only: subagents keep their own resolved effort (fork
+  // queries run on the main thread's already-busted prefix and their
+  // thinking/effort config must honor their own model defaults).
+  // Holds a string level or (ant-only) a numeric override.
+  latchedEffort: string | number | null
+  // Whether latchedEffort has been seeded yet (null latchedEffort is a
+  // legitimate wire state: "send no effort param, beta header only").
+  effortLatchSeeded: boolean
+  // Last effort level announced to the model via the effort_change tail
+  // attachment, so a change is announced once and stays in history.
+  lastEffortAnnounced: string | null
   // Current prompt ID (UUID) correlating a user prompt with subsequent OTel events
   promptId: string | null
   // Last API requestId for the main conversation chain (not subagents).
@@ -392,6 +420,9 @@ function getInitialState(): State {
     directConnectServerUrl: undefined,
     // System prompt section cache state
     systemPromptSectionCache: new Map(),
+    // Rendered leading prompt for the current render point
+    renderedSystemPrompt: null,
+    renderedSystemPromptMcpKey: '',
     // Last date emitted to the model
     lastEmittedDate: null,
     // Additional directories from --add-dir flag (for CLAUDE.md loading)
@@ -409,6 +440,9 @@ function getInitialState(): State {
     afkModeHeaderLatched: null,
     fastModeHeaderLatched: null,
     cacheEditingHeaderLatched: null,
+    latchedEffort: null,
+    effortLatchSeeded: false,
+    lastEffortAnnounced: null,
     // Current prompt ID
     promptId: null,
     lastMainRequestId: undefined,
@@ -1637,6 +1671,36 @@ export function setSystemPromptSectionCacheEntry(
 
 export function clearSystemPromptSectionState(): void {
   STATE.systemPromptSectionCache.clear()
+  clearRenderedSystemPrompt()
+}
+
+/**
+ * The assembled default system prompt this render point produced, together
+ * with the connected MCP server names it was rendered against. Reused for
+ * every request until the next render point (/clear, /compact, resume).
+ */
+export function getRenderedSystemPrompt(): {
+  parts: string[]
+  mcpKey: string
+} | null {
+  if (STATE.renderedSystemPrompt === null) return null
+  return {
+    parts: [...STATE.renderedSystemPrompt],
+    mcpKey: STATE.renderedSystemPromptMcpKey,
+  }
+}
+
+export function setRenderedSystemPrompt(
+  parts: string[] | null,
+  mcpKey = '',
+): void {
+  STATE.renderedSystemPrompt = parts === null ? null : [...parts]
+  STATE.renderedSystemPromptMcpKey = parts === null ? '' : mcpKey
+}
+
+export function clearRenderedSystemPrompt(): void {
+  STATE.renderedSystemPrompt = null
+  STATE.renderedSystemPromptMcpKey = ''
 }
 
 // Last emitted date accessors (for detecting midnight date changes)
@@ -1715,6 +1779,30 @@ export function setCacheEditingHeaderLatched(v: boolean): void {
   STATE.cacheEditingHeaderLatched = v
 }
 
+export function getLatchedEffort(): string | number | null {
+  return STATE.latchedEffort
+}
+
+export function setLatchedEffort(v: string | number): void {
+  STATE.latchedEffort = v
+}
+
+export function isEffortLatchSeeded(): boolean {
+  return STATE.effortLatchSeeded
+}
+
+export function setEffortLatchSeeded(seeded: boolean): void {
+  STATE.effortLatchSeeded = seeded
+}
+
+export function getLastEffortAnnounced(): string | null {
+  return STATE.lastEffortAnnounced
+}
+
+export function setLastEffortAnnounced(level: string): void {
+  STATE.lastEffortAnnounced = level
+}
+
 /**
  * Reset beta header latches to null. Called on /clear and /compact so a
  * fresh conversation gets fresh header evaluation.
@@ -1723,6 +1811,12 @@ export function clearBetaHeaderLatches(): void {
   STATE.afkModeHeaderLatched = null
   STATE.fastModeHeaderLatched = null
   STATE.cacheEditingHeaderLatched = null
+  // Render point: the cache is being rewritten anyway, so let the next
+  // main-thread request re-pin output_config.effort from live state, and
+  // let the effort_change attachment re-announce if it still differs.
+  STATE.latchedEffort = null
+  STATE.effortLatchSeeded = false
+  STATE.lastEffortAnnounced = null
 }
 
 export function getPromptId(): string | null {

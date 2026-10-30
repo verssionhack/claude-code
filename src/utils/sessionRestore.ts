@@ -9,6 +9,7 @@ import {
   setMainThreadAgentType,
   setOriginalCwd,
   setProjectRoot,
+  setRenderedSystemPrompt,
   setSystemPromptSectionCacheEntry,
   switchSession,
 } from '../bootstrap/state.js'
@@ -466,6 +467,18 @@ export function restorePromptContext(
     userContext: context.userContext ?? {},
     systemContext: context.systemContext ?? {},
   })
+  // Replay the fully assembled prompt, not just the section inputs: the
+  // static sections around them (output style, tool guidance, feature gates)
+  // are re-rendered in the new process and can differ by a few tokens, which
+  // shifts every following position and forces a full re-prefill.
+  // Transcripts predating the snapshot fall back to re-rendering from the
+  // replayed sections.
+  if (context.renderedSystemPrompt && context.renderedSystemPrompt.length > 0) {
+    setRenderedSystemPrompt(
+      context.renderedSystemPrompt,
+      context.renderedSystemPromptMcpKey ?? '',
+    )
+  }
   // The replayed conversation keeps the date it was rendered with. Seed the
   // date latch with that value so a resume on a later day still emits the
   // date_change attachment at the tail — the model learns the new date without

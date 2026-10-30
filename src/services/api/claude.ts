@@ -69,7 +69,10 @@ import {
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
-import { resolveRequestEffort } from '../../utils/effort.js'
+import {
+  effortLatchModeForQuerySource,
+  resolvePinnedRequestEffort,
+} from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
@@ -1573,10 +1576,16 @@ async function* queryModel(
 
   // When thinking is off, skip the effort parameter (and the effort beta
   // header) entirely — see resolveRequestEffort.
-  const effort = resolveRequestEffort(
+  // output_config.effort is part of the server-side cache key ahead of
+  // tools/system/messages, so main-thread and cache-sharing-fork queries pin
+  // the latched value and carry live changes via the effort_change tail
+  // attachment; every other query source keeps its own live resolution.
+  // See resolvePinnedRequestEffort (utils/effort.ts).
+  const effort = resolvePinnedRequestEffort(
     options.model,
     options.effortValue,
     thinkingEnabled,
+    effortLatchModeForQuerySource(options.querySource),
   )
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {

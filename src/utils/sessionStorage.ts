@@ -3081,6 +3081,8 @@ function promptContextKey(context: PersistedPromptContext): string {
     context.systemPromptSections,
     context.userContext,
     context.systemContext,
+    context.renderedSystemPrompt,
+    context.renderedSystemPromptMcpKey,
   ])
 }
 
@@ -3962,6 +3964,8 @@ export async function loadTranscriptFile(
             systemPromptSections: entry.systemPromptSections,
             userContext: entry.userContext,
             systemContext: entry.systemContext,
+            renderedSystemPrompt: entry.renderedSystemPrompt,
+            renderedSystemPromptMcpKey: entry.renderedSystemPromptMcpKey,
           })
         } else if (entry.type === 'skill-listing' && entry.sessionId) {
           skillListings.set(entry.sessionId, {
@@ -4048,6 +4052,8 @@ export async function loadTranscriptFile(
           systemPromptSections: entry.systemPromptSections,
           userContext: entry.userContext,
           systemContext: entry.systemContext,
+          renderedSystemPrompt: entry.renderedSystemPrompt,
+          renderedSystemPromptMcpKey: entry.renderedSystemPromptMcpKey,
         })
       } else if (entry.type === 'skill-listing' && entry.sessionId) {
         skillListings.set(entry.sessionId, {

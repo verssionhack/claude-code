@@ -1,4 +1,10 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import {
+  getLatchedEffort,
+  isEffortLatchSeeded,
+  setEffortLatchSeeded,
+  setLatchedEffort,
+} from '../bootstrap/state.js'
 import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
@@ -207,6 +213,105 @@ export function resolveRequestEffort(
     return undefined
   }
   return resolveAppliedEffort(model, effortValue)
+}
+
+/**
+ * How a query relates to the session's pinned effort wire value.
+ *
+ * - manage: main-thread / SDK queries own the latch (first one seeds it).
+ * - pinned: cache-sharing forks (compact summary, session memory) must send
+ *   the same output_config.effort the main thread sends, but never seed or
+ *   move it. Their prefix IS the main thread's cached prefix.
+ * - live: everything else (subagents, helper calls) keeps today's behavior:
+ *   their own resolution for their own model. They don't share the main
+ *   conversation's prefix, and their model default must keep winning.
+ */
+export type EffortLatchMode = 'manage' | 'pinned' | 'live'
+
+export function effortLatchModeForQuerySource(
+  querySource: string | undefined,
+): EffortLatchMode {
+  if (querySource === undefined) return 'manage'
+  if (querySource === 'sdk') return 'manage'
+  if (querySource.startsWith('repl_main_thread')) return 'manage'
+  if (querySource === 'compact') return 'pinned'
+  if (querySource === 'session_memory') return 'pinned'
+  return 'live'
+}
+
+/**
+ * Resolve the effort wire value (output_config.effort + beta header) under
+ * the cache-pin policy. output_config sits at the head of the server-side
+ * cache key, so this value must not move mid-session; effort changes ride a
+ * tail attachment instead (effort_change in attachments.ts) and the wire
+ * value re-syncs at render points, where the cache is rewritten anyway
+ * (clearBetaHeaderLatches resets the latch on /clear, /compact, resume).
+ *
+ * The first main-thread request that has a resolved value seeds the latch —
+ * including "no value", which pins the beta-header-only shape. Subsequent
+ * main-thread requests send the latched value even when live state differs.
+ * Numeric (ant-only) overrides seed the latch too; a live numeric change
+ * sends live instead of pinning, since numeric semantics can't be carried
+ * by prompt text.
+ */
+/**
+ * Narrow the latch back to EffortValue. Stored via setLatchedEffort from an
+ * already-resolved EffortValue, so the guard mainly protects a corrupted
+ * state object; an unrecognized string drops the param rather than sending
+ * garbage to the API.
+ */
+export function fromLatchedEffort(
+  stored: string | number | null,
+): EffortValue | undefined {
+  if (stored === null) return undefined
+  if (typeof stored === 'number') return stored
+  return isEffortLevel(stored) ? stored : undefined
+}
+
+export function resolvePinnedRequestEffort(
+  model: string,
+  effortValue: EffortValue | undefined,
+  thinkingEnabled: boolean,
+  latchMode: EffortLatchMode,
+): EffortValue | undefined {
+  const live = resolveRequestEffort(model, effortValue, thinkingEnabled)
+  if (latchMode === 'live') return live
+  if (!thinkingEnabled) return undefined
+
+  if (latchMode === 'pinned') {
+    // Fork: match whatever the main thread pins, never move it.
+    return isEffortLatchSeeded() ? fromLatchedEffort(getLatchedEffort()) : live
+  }
+
+  if (!isEffortLatchSeeded()) {
+    setEffortLatchSeeded(true)
+    if (live !== undefined) setLatchedEffort(live)
+    return live
+  }
+  const pinned = fromLatchedEffort(getLatchedEffort())
+  // A live numeric override (ant-only) can't be carried by prompt text, so
+  // it keeps its wire semantics and eats the one cache bust.
+  if (live !== undefined && typeof live === 'number' && live !== pinned) {
+    return live
+  }
+  return pinned
+}
+
+/**
+ * The live effort level the user is currently steering with, mapped to the
+ * level the API would apply for it (numeric overrides map through
+ * convertEffortValueToLevel; no value maps to the API's 'high' default).
+ * Returns null when the effort parameter doesn't apply at all (env set to
+ * 'unset'). Used by the effort_change tail attachment, which tells the
+ * model the live level when the pinned wire value can't follow it.
+ */
+export function getLiveEffortLevel(
+  model: string,
+  appStateEffort: EffortValue | undefined,
+): EffortLevel | null {
+  const resolved = resolveAppliedEffort(model, appStateEffort)
+  if (resolved === undefined) return null
+  return convertEffortValueToLevel(resolved)
 }
 
 /**

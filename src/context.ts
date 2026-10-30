@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
 import {
+  clearRenderedSystemPrompt,
   getAdditionalDirectoriesForClaudeMd,
   setCachedClaudeMdContent,
 } from './bootstrap/state.js'
@@ -44,9 +45,15 @@ export function setPersistedPromptContext(context: {
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
   getGitStatus.cache.clear?.()
+  // The assembled prompt belongs to the previous context; the resume path
+  // re-seeds it from the snapshot right after this call.
+  clearRenderedSystemPrompt()
 }
 
 export function clearPersistedPromptContext(): void {
+  // The rendered prompt is dropped even when no snapshot is held: the -r
+  // picker can render one against a prefetch cwd before a resume runs.
+  clearRenderedSystemPrompt()
   if (persistedPromptContext === null) return
   persistedPromptContext = null
   getUserContext.cache.clear?.()
@@ -63,6 +70,7 @@ export function setSystemPromptInjection(value: string | null): void {
   // Clear context caches immediately when injection changes
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
+  clearRenderedSystemPrompt()
 }
 
 export const getGitStatus = memoize(async (): Promise<string | null> => {

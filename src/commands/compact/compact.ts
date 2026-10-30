@@ -2,7 +2,6 @@ import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import type { SDKStatus } from '../../entrypoints/agentSdkTypes.js'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getSystemPrompt } from '../../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js'
 import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.js'
@@ -17,6 +16,8 @@ import {
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
+import { getLastCacheSafeParams } from '../../utils/cacheSafeParamsSlot.js'
+import { buildDefaultSystemPrompt } from '../../utils/queryContext.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -274,15 +275,34 @@ async function getCacheSharingParams(
   toolUseContext: ToolUseContext
   forkContextMessages: Message[]
 }> {
+  // The summary fork exists to piggyback on the main conversation's cached
+  // prefix, so it must send the bytes the main loop actually sent. Prefer the
+  // post-turn snapshot (same source /btw and /recap use); rebuilding here can
+  // only approximate, and a few tokens of drift re-prefills the whole
+  // conversation on a request whose only job is to shrink it. The rebuild
+  // also hardcoded mainThreadAgentDefinition: undefined, so agent-persona
+  // and coordinator sessions were already sending a prompt the main thread
+  // never sent.
+  const saved = getLastCacheSafeParams()
+  if (saved) {
+    return {
+      systemPrompt: saved.systemPrompt,
+      userContext: saved.userContext,
+      systemContext: saved.systemContext,
+      toolUseContext: context,
+      forkContextMessages,
+    }
+  }
+
   const appState = context.getAppState()
-  const defaultSysPrompt = await getSystemPrompt(
-    context.options.tools,
-    context.options.mainLoopModel,
-    Array.from(
+  const defaultSysPrompt = await buildDefaultSystemPrompt({
+    tools: context.options.tools,
+    mainLoopModel: context.options.mainLoopModel,
+    additionalWorkingDirectories: Array.from(
       appState.toolPermissionContext.additionalWorkingDirectories.keys(),
     ),
-    context.options.mcpClients,
-  )
+    mcpClients: context.options.mcpClients,
+  })
   const systemPrompt = buildEffectiveSystemPrompt({
     mainThreadAgentDefinition: undefined,
     toolUseContext: context,

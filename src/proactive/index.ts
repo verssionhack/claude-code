@@ -8,6 +8,8 @@
  * control its own wake-up cadence.
  */
 
+import { clearRenderedSystemPrompt } from '../bootstrap/state.js'
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -44,6 +46,9 @@ export function activateProactive(source?: string): void {
   paused = false
   contextBlocked = false
   activationSource = source
+  // The autonomous prompt replaces the interactive one wholesale; the
+  // assembled-prompt memo must re-render on the next request.
+  clearRenderedSystemPrompt()
   notify()
 }
 
@@ -54,6 +59,7 @@ export function deactivateProactive(): void {
   contextBlocked = false
   nextTickAt = null
   activationSource = undefined
+  clearRenderedSystemPrompt()
   notify()
 }
 

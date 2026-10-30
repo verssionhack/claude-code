@@ -319,6 +319,8 @@ describe('prompt-context / skill-listing metadata', () => {
           systemPromptSections: [['memory', 'memory-section']],
           userContext: { currentDate: 'date-x' },
           systemContext: { gitStatus: 'snapshot' },
+          renderedSystemPrompt: ['leading-a', 'leading-b'],
+          renderedSystemPromptMcpKey: 'server-a',
         }),
         JSON.stringify({
           type: 'skill-listing',
@@ -333,11 +335,21 @@ describe('prompt-context / skill-listing metadata', () => {
     const log = await getLastSessionLog(asUuid(sid))
     expect(log?.promptContext?.promptProjectRoot).toBe('/project')
     expect(log?.promptContext?.userContext.currentDate).toBe('date-x')
+    expect(log?.promptContext?.renderedSystemPrompt).toEqual([
+      'leading-a',
+      'leading-b',
+    ])
+    expect(log?.promptContext?.renderedSystemPromptMcpKey).toBe('server-a')
     expect(log?.skillListing?.content).toBe('skills-content')
     expect(log?.skillListing?.skillCount).toBe(3)
 
     const fromFile = await loadTranscriptFromFile(file)
     expect(fromFile.promptContext?.systemContext.gitStatus).toBe('snapshot')
+    expect(fromFile.promptContext?.renderedSystemPrompt).toEqual([
+      'leading-a',
+      'leading-b',
+    ])
+    expect(fromFile.promptContext?.renderedSystemPromptMcpKey).toBe('server-a')
     expect(fromFile.skillListing?.content).toBe('skills-content')
   })
 })

@@ -11,12 +11,17 @@
 
 import {
   getProjectRoot,
+  getRenderedSystemPrompt,
   getSystemPromptSectionCache,
+  setRenderedSystemPrompt,
 } from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
-import type { MCPServerConnection } from '../services/mcp/types.js'
+import type {
+  ConnectedMCPServer,
+  MCPServerConnection,
+} from '../services/mcp/types.js'
 import type { AppState } from '../state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
@@ -33,6 +38,23 @@ import {
 } from './thinking.js'
 
 /**
+ * Identity of the connected MCP servers that feed the (uncached) instructions
+ * section. Only a changed name set can legitimately change that section; the
+ * assembled prompt is reused while this key is unchanged.
+ */
+function connectedMcpKey(
+  mcpClients: MCPServerConnection[] | undefined,
+): string {
+  return (mcpClients ?? [])
+    .filter(
+      (client): client is ConnectedMCPServer => client.type === 'connected',
+    )
+    .map(client => client.name)
+    .sort()
+    .join('\u0000')
+}
+
+/**
  * Fetch the three context pieces that form the API cache-key prefix:
  * systemPrompt parts, userContext, systemContext.
  *
@@ -46,6 +68,67 @@ import {
  * injects coordinator userContext and memory-mechanics prompt on top;
  * sideQuestion's fallback uses the base result directly.
  */
+/**
+ * Render the default system prompt once per render point and reuse those
+ * bytes for every later request. Section values are cached individually, but
+ * the static sections around them — intro/output-style text, tool guidance,
+ * feature gates — are otherwise re-rendered per request, and a resumed
+ * process can render them differently. Either case rewrites the leading
+ * prompt tokens and forces the inference server to re-prefill the whole
+ * conversation, so the assembled bytes win until a render point (/clear,
+ * /compact, resume, or a changed MCP server set).
+ */
+export async function buildDefaultSystemPrompt({
+  tools,
+  mainLoopModel,
+  additionalWorkingDirectories,
+  mcpClients,
+}: {
+  tools: Tools
+  mainLoopModel: string
+  additionalWorkingDirectories: string[]
+  mcpClients: MCPServerConnection[]
+}): Promise<string[]> {
+  const mcpKey = connectedMcpKey(mcpClients)
+  const rendered = getRenderedSystemPrompt()
+  if (rendered !== null && rendered.mcpKey === mcpKey) return rendered.parts
+  const defaultSystemPrompt = await getSystemPrompt(
+    tools,
+    mainLoopModel,
+    additionalWorkingDirectories,
+    mcpClients,
+  )
+  setRenderedSystemPrompt(defaultSystemPrompt, mcpKey)
+  return defaultSystemPrompt
+}
+
+/**
+ * Record the environment-derived prefix, and the assembled bytes built from
+ * it, for a later resume. Only the default-prompt path records: custom
+ * prompts (subagents, SDK) replace the default prefix and must not overwrite
+ * the main session's snapshot.
+ */
+export function recordDefaultSystemPromptContext({
+  defaultSystemPrompt,
+  userContext,
+  systemContext,
+  mcpClients,
+}: {
+  defaultSystemPrompt: string[]
+  userContext: { [k: string]: string }
+  systemContext: { [k: string]: string }
+  mcpClients: MCPServerConnection[]
+}): void {
+  recordPromptContext({
+    promptProjectRoot: getProjectRoot(),
+    systemPromptSections: Array.from(getSystemPromptSectionCache().entries()),
+    userContext,
+    systemContext,
+    renderedSystemPrompt: defaultSystemPrompt,
+    renderedSystemPromptMcpKey: connectedMcpKey(mcpClients),
+  })
+}
+
 export async function fetchSystemPromptParts({
   tools,
   mainLoopModel,
@@ -66,25 +149,21 @@ export async function fetchSystemPromptParts({
   const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
     customSystemPrompt !== undefined
       ? Promise.resolve([])
-      : getSystemPrompt(
+      : buildDefaultSystemPrompt({
           tools,
           mainLoopModel,
           additionalWorkingDirectories,
           mcpClients,
-        ),
+        }),
     getUserContext(),
     customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
   ])
-  // Record the environment-derived prefix so a later resume can replay it
-  // verbatim instead of re-deriving it against a different cwd/date/repo.
-  // Custom prompts (subagents, SDK) replace the default prefix and must not
-  // overwrite the main session's snapshot.
   if (customSystemPrompt === undefined) {
-    recordPromptContext({
-      promptProjectRoot: getProjectRoot(),
-      systemPromptSections: Array.from(getSystemPromptSectionCache().entries()),
+    recordDefaultSystemPromptContext({
+      defaultSystemPrompt,
       userContext,
       systemContext,
+      mcpClients,
     })
   }
   return { defaultSystemPrompt, userContext, systemContext }

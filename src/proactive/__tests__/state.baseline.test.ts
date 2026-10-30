@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
+  getRenderedSystemPrompt,
+  setRenderedSystemPrompt,
+} from '../../bootstrap/state'
+import {
   activateProactive,
   deactivateProactive,
   getActivationSource,
@@ -61,6 +65,16 @@ describe('proactive state baseline', () => {
     expect(isContextBlocked()).toBe(true)
     expect(getNextTickAt()).toBeNull()
     expect(shouldTick()).toBe(false)
+  })
+
+  test('toggling proactive drops the assembled prompt', () => {
+    setRenderedSystemPrompt(['interactive'], '')
+    activateProactive('memo_case')
+    expect(getRenderedSystemPrompt()).toBeNull()
+
+    setRenderedSystemPrompt(['autonomous'], '')
+    deactivateProactive()
+    expect(getRenderedSystemPrompt()).toBeNull()
   })
 
   test('subscribers are notified on state changes', () => {

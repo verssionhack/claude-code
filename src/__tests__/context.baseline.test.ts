@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  clearSystemPromptSectionState,
+  getRenderedSystemPrompt,
   resetStateForTests,
   setOriginalCwd,
   setProjectRoot,
+  setRenderedSystemPrompt,
 } from '../bootstrap/state'
 import {
   getSystemContext,
   getUserContext,
+  setPersistedPromptContext,
   setSystemPromptInjection,
 } from '../context'
 import { clearMemoryFileCaches } from '../utils/claudemd'
@@ -91,5 +95,27 @@ describe('context baseline', () => {
     } else {
       expect(second.gitStatus).toBeUndefined()
     }
+  })
+
+  test('the rendered system prompt is reused until a render point', () => {
+    const parts = ['leading-a', 'leading-b']
+    setRenderedSystemPrompt(parts, 'server-a')
+    // Copies: a caller mutating its own array cannot rewrite the cached prefix.
+    parts.push('later')
+    expect(getRenderedSystemPrompt()).toEqual({
+      parts: ['leading-a', 'leading-b'],
+      mcpKey: 'server-a',
+    })
+
+    clearSystemPromptSectionState()
+    expect(getRenderedSystemPrompt()).toBeNull()
+  })
+
+  test('swapping the persisted context drops the rendered system prompt', () => {
+    setRenderedSystemPrompt(['stale'], '')
+
+    setPersistedPromptContext({})
+
+    expect(getRenderedSystemPrompt()).toBeNull()
   })
 })

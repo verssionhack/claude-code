@@ -28,8 +28,17 @@ const {
   getEffortLevelDescription,
   resolvePickerEffortPersistence,
   resolveRequestEffort,
+  resolvePinnedRequestEffort,
+  effortLatchModeForQuerySource,
   EFFORT_LEVELS,
 } = await import('src/utils/effort.js')
+
+const {
+  getLatchedEffort,
+  isEffortLatchSeeded,
+  resetStateForTests,
+  clearBetaHeaderLatches,
+} = await import('src/bootstrap/state.js')
 
 // ─── EFFORT_LEVELS constant ────────────────────────────────────────────
 
@@ -381,5 +390,110 @@ describe('resolveRequestEffort', () => {
   test('respects CLAUDE_CODE_EFFORT_LEVEL=unset when thinking is enabled', () => {
     process.env.CLAUDE_CODE_EFFORT_LEVEL = 'unset'
     expect(resolveRequestEffort(MODEL, 'xhigh', true)).toBeUndefined()
+  })
+})
+
+// ─── resolvePinnedRequestEffort (cache-key pin) ────────────────────────
+
+describe('resolvePinnedRequestEffort', () => {
+  const MODEL = 'claude-opus-4-7'
+
+  beforeEach(() => {
+    resetStateForTests()
+    delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  })
+
+  afterEach(() => {
+    delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  })
+
+  test('query source routing: main manages, compact/session-memory pinned, rest live', () => {
+    expect(effortLatchModeForQuerySource('repl_main_thread')).toBe('manage')
+    expect(
+      effortLatchModeForQuerySource('repl_main_thread:outputStyle:custom'),
+    ).toBe('manage')
+    expect(effortLatchModeForQuerySource('sdk')).toBe('manage')
+    expect(effortLatchModeForQuerySource(undefined)).toBe('manage')
+    expect(effortLatchModeForQuerySource('compact')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('session_memory')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('agent:builtin:fork')).toBe('live')
+    expect(effortLatchModeForQuerySource('side_question')).toBe('live')
+  })
+
+  test('first manage-mode request seeds the latch with its live value', () => {
+    const wire = resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    expect(wire).toBe('medium')
+    expect(isEffortLatchSeeded()).toBe(true)
+    expect(getLatchedEffort()).toBe('medium')
+  })
+
+  test('a mid-session /effort change keeps sending the pinned wire value', () => {
+    resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    // /effort low: wire stays medium (cache key preserved); the live level
+    // rides the effort_change tail attachment instead.
+    const wire = resolvePinnedRequestEffort(MODEL, 'low', true, 'manage')
+    expect(wire).toBe('medium')
+    expect(getLatchedEffort()).toBe('medium')
+  })
+
+  test('undefined live value seeds the pin as "no param" (beta-header-only shape)', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'unset'
+    const wire = resolvePinnedRequestEffort(MODEL, 'high', true, 'manage')
+    expect(wire).toBeUndefined()
+    expect(isEffortLatchSeeded()).toBe(true)
+    // A later live change must not start sending a param.
+    delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+    expect(
+      resolvePinnedRequestEffort(MODEL, 'low', true, 'manage'),
+    ).toBeUndefined()
+  })
+
+  test('live numeric override (ant-only) is not pinned and sends live', () => {
+    resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    const wire = resolvePinnedRequestEffort(MODEL, 77, true, 'manage')
+    expect(wire).toBe(77)
+  })
+
+  test('pinned-mode forks send the main thread wire value', () => {
+    resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    // A compact fork resolving a different live value (e.g. no effortValue
+    // in its context) must still send what the main thread sends.
+    expect(resolvePinnedRequestEffort(MODEL, undefined, true, 'pinned')).toBe(
+      'medium',
+    )
+    expect(getLatchedEffort()).toBe('medium')
+  })
+
+  test('pinned-mode before any seed falls back to its own live value', () => {
+    expect(resolvePinnedRequestEffort(MODEL, 'high', true, 'pinned')).toBe(
+      'high',
+    )
+    expect(isEffortLatchSeeded()).toBe(false)
+  })
+
+  test('live-mode (subagents) never reads or writes the pin', () => {
+    resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    // Fork with a different model default must keep its own resolution —
+    // pinning it would change the main thread's wire value for a prefix
+    // nobody shares.
+    expect(resolvePinnedRequestEffort(MODEL, 'low', true, 'live')).toBe('low')
+    expect(getLatchedEffort()).toBe('medium')
+  })
+
+  test('thinking disabled returns undefined without seeding', () => {
+    expect(
+      resolvePinnedRequestEffort(MODEL, 'high', false, 'manage'),
+    ).toBeUndefined()
+    expect(isEffortLatchSeeded()).toBe(false)
+  })
+
+  test('render point re-seeds the pin from live state', () => {
+    resolvePinnedRequestEffort(MODEL, 'medium', true, 'manage')
+    clearBetaHeaderLatches()
+    expect(isEffortLatchSeeded()).toBe(false)
+    expect(getLatchedEffort()).toBeNull()
+    // Post-/compact: live /effort low now wins on the wire — the cache is
+    // being rewritten at the render point anyway.
+    expect(resolvePinnedRequestEffort(MODEL, 'low', true, 'manage')).toBe('low')
   })
 })
