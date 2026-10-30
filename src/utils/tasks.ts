@@ -73,6 +73,14 @@ export const TaskStatusSchema = lazySchema(() =>
 )
 export type TaskStatus = z.infer<ReturnType<typeof TaskStatusSchema>>
 
+/**
+ * Task IDs are sequential integer strings ("1", "2", ...) created by
+ * createTask, but models routinely emit them as JSON numbers (e.g.
+ * `taskId: 17`). Coerce to a string so a numeric ID parses instead of
+ * rejecting the whole tool call with an InputValidationError.
+ */
+export const TaskIdSchema = z.coerce.string()
+
 export const TaskSchema = lazySchema(() =>
   z.object({
     id: z.string(),

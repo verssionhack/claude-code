@@ -9,6 +9,10 @@
  * import from here (QueryEngine.ts, cli/print.ts).
  */
 
+import {
+  getProjectRoot,
+  getSystemPromptSectionCache,
+} from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../context.js'
@@ -21,6 +25,7 @@ import { createAbortController } from './abortController.js'
 import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
 import { getMainLoopModel } from './model/model.js'
+import { recordPromptContext } from './sessionStorage.js'
 import { asSystemPrompt } from './systemPromptType.js'
 import {
   shouldEnableThinkingByDefault,
@@ -70,6 +75,18 @@ export async function fetchSystemPromptParts({
     getUserContext(),
     customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext(),
   ])
+  // Record the environment-derived prefix so a later resume can replay it
+  // verbatim instead of re-deriving it against a different cwd/date/repo.
+  // Custom prompts (subagents, SDK) replace the default prefix and must not
+  // overwrite the main session's snapshot.
+  if (customSystemPrompt === undefined) {
+    recordPromptContext({
+      promptProjectRoot: getProjectRoot(),
+      systemPromptSections: Array.from(getSystemPromptSectionCache().entries()),
+      userContext,
+      systemContext,
+    })
+  }
   return { defaultSystemPrompt, userContext, systemContext }
 }
 

@@ -36,6 +36,8 @@ export { SearchExtraToolsTool } from './tools/SearchExtraToolsTool/SearchExtraTo
 export { TungstenTool } from './tools/TungstenTool/TungstenTool.js'
 export { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 export { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
+export { ListModelTool } from './tools/ListModelTool/ListModelTool.js'
+export { SystemoneTool } from './tools/SystemoneTool/SystemoneTool.js'
 export { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'
 
 // Feature-gated tools

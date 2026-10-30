@@ -9,6 +9,7 @@ import { FileWriteTool } from '@claude-code-best/builtin-tools/tools/FileWriteTo
 import { GlobTool } from '@claude-code-best/builtin-tools/tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from '@claude-code-best/builtin-tools/tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from '@claude-code-best/builtin-tools/tools/WebFetchTool/WebFetchTool.js'
+import { ListModelTool } from '@claude-code-best/builtin-tools/tools/ListModelTool/ListModelTool.js'
 import { TaskStopTool } from '@claude-code-best/builtin-tools/tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from '@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
@@ -94,6 +95,7 @@ const GoalTool = feature('GOAL')
   : null
 import { LocalMemoryRecallTool } from '@claude-code-best/builtin-tools/tools/LocalMemoryRecallTool/LocalMemoryRecallTool.js'
 import { VaultHttpFetchTool } from '@claude-code-best/builtin-tools/tools/VaultHttpFetchTool/VaultHttpFetchTool.js'
+import { SystemoneTool } from '@claude-code-best/builtin-tools/tools/SystemoneTool/SystemoneTool.js'
 import { TaskCreateTool } from '@claude-code-best/builtin-tools/tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from '@claude-code-best/builtin-tools/tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from '@claude-code-best/builtin-tools/tools/TaskUpdateTool/TaskUpdateTool.js'
@@ -231,6 +233,7 @@ export function getAllBaseTools(): Tools {
     NotebookEditTool,
     ArtifactTool,
     WebFetchTool,
+    ListModelTool,
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,
@@ -239,6 +242,7 @@ export function getAllBaseTools(): Tools {
     EnterPlanModeTool,
     LocalMemoryRecallTool,
     VaultHttpFetchTool,
+    SystemoneTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(GoalTool ? [GoalTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),

@@ -933,6 +933,8 @@ async function* queryLoop(
               queryTracking,
               effortValue: appState.effortValue,
               temperatureOverride: appState.temperatureOverride,
+              samplingOptions: appState.samplingOptions,
+              thinkingOverride: appState.thinkingOverride,
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,
@@ -1642,6 +1644,55 @@ async function* queryLoop(
             queryChainId: queryChainIdForAnalytics,
             queryDepth: queryTracking.depth,
           })
+        }
+      }
+
+      // /compact_after: the turn ended naturally — if the context has
+      // reached the user-configured length, compact now so the next turn
+      // starts from the summarized context. Percentages resolve against the
+      // effective window at check time, which adapts to the server-reported
+      // max_input_tokens (model capabilities cache).
+      const compactAfter = toolUseContext.getAppState().compactAfter
+      if (compactAfter) {
+        const effectiveWindow = getEffectiveContextWindowSize(currentModel)
+        const threshold =
+          compactAfter.kind === 'percent'
+            ? Math.floor(effectiveWindow * (compactAfter.value / 100))
+            : compactAfter.value
+        const fullMessages = [...messagesForQuery, ...assistantMessages]
+        if (tokenCountWithEstimation(fullMessages) >= threshold) {
+          const { compactionResult, consecutiveFailures } =
+            await deps.autocompact(
+              fullMessages,
+              toolUseContext,
+              {
+                systemPrompt,
+                userContext,
+                systemContext,
+                toolUseContext,
+                forkContextMessages: fullMessages,
+              },
+              querySource,
+              tracking,
+              0,
+              threshold,
+            )
+          if (compactionResult) {
+            tracking = {
+              compacted: true,
+              turnId: deps.uuid(),
+              turnCounter: 0,
+              consecutiveFailures: 0,
+            }
+            for (const message of buildPostCompactMessages(compactionResult)) {
+              yield message
+            }
+          } else if (consecutiveFailures !== undefined) {
+            tracking = {
+              ...(tracking ?? { compacted: false, turnId: '', turnCounter: 0 }),
+              consecutiveFailures,
+            }
+          }
         }
       }
 

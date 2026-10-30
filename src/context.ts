@@ -22,6 +22,38 @@ const MAX_STATUS_CHARS = 1000
 // System prompt injection for cache breaking (ant-only, ephemeral debugging state)
 let systemPromptInjection: string | null = null
 
+/**
+ * Context blocks captured by the previous process and replayed on resume.
+ *
+ * These blocks are part of the leading prompt tokens. Re-deriving them in a
+ * new process (different date, changed git status, edited CLAUDE.md) rewrites
+ * that prefix and forces the inference server to re-prefill the conversation,
+ * so a resumed session uses the recorded bytes verbatim instead. Cleared by
+ * clearPersistedPromptContext() at every genuine re-render point (/compact).
+ */
+let persistedPromptContext: {
+  userContext?: { [k: string]: string }
+  systemContext?: { [k: string]: string }
+} | null = null
+
+export function setPersistedPromptContext(context: {
+  userContext?: { [k: string]: string }
+  systemContext?: { [k: string]: string }
+}): void {
+  persistedPromptContext = context
+  getUserContext.cache.clear?.()
+  getSystemContext.cache.clear?.()
+  getGitStatus.cache.clear?.()
+}
+
+export function clearPersistedPromptContext(): void {
+  if (persistedPromptContext === null) return
+  persistedPromptContext = null
+  getUserContext.cache.clear?.()
+  getSystemContext.cache.clear?.()
+  getGitStatus.cache.clear?.()
+}
+
 export function getSystemPromptInjection(): string | null {
   return systemPromptInjection
 }
@@ -117,6 +149,9 @@ export const getSystemContext = memoize(
   async (): Promise<{
     [k: string]: string
   }> => {
+    if (persistedPromptContext?.systemContext) {
+      return persistedPromptContext.systemContext
+    }
     const startTime = Date.now()
     logForDiagnosticsNoPII('info', 'system_context_started')
 
@@ -156,6 +191,14 @@ export const getUserContext = memoize(
   async (): Promise<{
     [k: string]: string
   }> => {
+    if (persistedPromptContext?.userContext) {
+      // Keep the auto-mode classifier's view of CLAUDE.md in sync with the
+      // replayed content; it reads this cache instead of claudemd.ts.
+      setCachedClaudeMdContent(
+        persistedPromptContext.userContext.claudeMd || null,
+      )
+      return persistedPromptContext.userContext
+    }
     const startTime = Date.now()
     logForDiagnosticsNoPII('info', 'user_context_started')
 

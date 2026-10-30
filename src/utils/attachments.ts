@@ -220,6 +220,7 @@ import {
   isAutoCompactEnabled,
 } from '../services/compact/autoCompact.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { recordSkillListing } from './sessionStorage.js'
 import {
   hasInstructionsLoadedHook,
   executeInstructionsLoadedHooks,
@@ -2821,6 +2822,13 @@ async function getSkillListingAttachments(
     getSdkBetas(),
   )
   const content = formatCommandsWithinBudget(newSkills, contextWindowTokens)
+
+  // Remember the initial listing so a resumed process can re-inject the same
+  // bytes at the top of the conversation (the attachment is not persisted as
+  // a message). Subagents have their own per-agent listings.
+  if (isInitial && !agentKey) {
+    recordSkillListing({ content, skillCount: newSkills.length })
+  }
 
   return [
     {

@@ -78,7 +78,20 @@ export function getSmallFastModel(): ModelName {
     return process.env.GEMINI_SMALL_FAST_MODEL
   }
   // Anthropic-specific or fallback
-  return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
+  if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
+    return process.env.ANTHROPIC_SMALL_FAST_MODEL
+  }
+  // Custom endpoint (self-hosted gateway, local inference server): such a
+  // backend usually serves one model regardless of the id it is handed, so an
+  // auxiliary call (tool-use summary, session title, side query) naming a second
+  // id just creates a second conversation on the same backend. On a
+  // single-slot server that evicts the main conversation's cached prefix and
+  // forces a full re-prefill. Name the session's own model instead. Real
+  // api.anthropic.com still gets Haiku, whose small-model probes depend on it.
+  if (provider === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
+    return getMainLoopModel()
+  }
+  return getDefaultHaikuModel()
 }
 
 export function isNonCustomOpusModel(model: ModelName): boolean {

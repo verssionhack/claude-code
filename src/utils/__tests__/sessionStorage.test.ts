@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const MAX_CACHED_ENTRIES = 200 // mirrors MAX_CACHED_SESSION_FILES in sessionStorage.ts
@@ -9,6 +9,11 @@ const {
   getSessionMessages,
   getSessionMessagesCache,
   clearSessionMessagesCache,
+  getLastSessionLog,
+  getTranscriptPathForSession,
+  loadTranscriptFile,
+  loadTranscriptFromFile,
+  resolvePromptCwd,
 } = await import('../sessionStorage.js')
 
 function asUuid(s: string): any {
@@ -147,5 +152,240 @@ describe('getSessionMessages bounded cache (memory leak fix)', () => {
       await getSessionMessages(asUuid(`refill-${i}`))
     }
     expect(cache.size).toBe(MAX_CACHED_ENTRIES)
+  })
+})
+
+describe('resolvePromptCwd', () => {
+  const message = (cwd: string): any => ({ type: 'user', cwd })
+  const boundary = (cwd: string): any => ({
+    type: 'system',
+    subtype: 'compact_boundary',
+    cwd,
+  })
+
+  test('persisted prompt-cwd wins over transcript evidence', () => {
+    expect(resolvePromptCwd([message('/launch')], '/persisted')).toBe(
+      '/persisted',
+    )
+  })
+
+  test('uses the last compact boundary cwd, not the shell tail', () => {
+    // A `cd` after the last prompt render stamps later entries with /tail;
+    // the prompt itself still carries the post-compact /tools cwd.
+    expect(
+      resolvePromptCwd([
+        message('/launch'),
+        boundary('/tools'),
+        message('/tail'),
+      ]),
+    ).toBe('/tools')
+  })
+
+  test('falls back to the first entry without a compact boundary', () => {
+    expect(resolvePromptCwd([message('/launch'), message('/tail')])).toBe(
+      '/launch',
+    )
+  })
+
+  test('skips entries without a non-empty cwd', () => {
+    expect(
+      resolvePromptCwd([{ type: 'user' } as any, message(''), message('/x')]),
+    ).toBe('/x')
+  })
+
+  test('returns undefined for an empty transcript', () => {
+    expect(resolvePromptCwd([])).toBeUndefined()
+  })
+})
+
+describe('prompt-cwd transcript entries', () => {
+  const sid = '11111111-1111-4111-8111-111111111111'
+
+  test('last entry wins and is returned by loadTranscriptFile', async () => {
+    const file = join(tempDir, 'prompt-cwd.jsonl')
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'prompt-cwd',
+          sessionId: sid,
+          promptCwd: '/one',
+        }),
+        JSON.stringify({
+          type: 'prompt-cwd',
+          sessionId: sid,
+          promptCwd: '/two',
+        }),
+        '',
+      ].join('\n'),
+    )
+    const loaded = await loadTranscriptFile(file)
+    expect(loaded.promptCwds.get(sid as any)).toBe('/two')
+  })
+
+  test('entries are keyed by sessionId', async () => {
+    const otherSid = '22222222-2222-4222-8222-222222222222'
+    const file = join(tempDir, 'prompt-cwd-sessions.jsonl')
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: 'prompt-cwd', sessionId: sid, promptCwd: '/a' }),
+        JSON.stringify({
+          type: 'prompt-cwd',
+          sessionId: otherSid,
+          promptCwd: '/b',
+        }),
+        '',
+      ].join('\n'),
+    )
+    const loaded = await loadTranscriptFile(file)
+    expect(loaded.promptCwds.get(sid as any)).toBe('/a')
+    expect(loaded.promptCwds.get(otherSid as any)).toBe('/b')
+  })
+})
+
+describe('prompt-context / skill-listing metadata', () => {
+  const sid = '55555555-5555-4555-8555-555555555555'
+  const otherSid = '66666666-6666-4666-8666-666666666666'
+  const messageUuid = '77777777-7777-4777-8777-777777777777'
+
+  test('entries are keyed by sessionId', async () => {
+    const file = join(tempDir, 'prompt-context.jsonl')
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'prompt-context',
+          sessionId: sid,
+          promptProjectRoot: '/a',
+          systemPromptSections: [['env_info_simple', 'rendered']],
+          userContext: { currentDate: 'date-a' },
+          systemContext: { gitStatus: 'git-a' },
+        }),
+        JSON.stringify({
+          type: 'prompt-context',
+          sessionId: otherSid,
+          promptProjectRoot: '/b',
+          systemPromptSections: [],
+          userContext: {},
+          systemContext: {},
+        }),
+        JSON.stringify({
+          type: 'skill-listing',
+          sessionId: sid,
+          content: 'listing-a',
+          skillCount: 2,
+        }),
+        JSON.stringify({
+          type: 'skill-listing',
+          sessionId: otherSid,
+          content: 'listing-b',
+          skillCount: 1,
+        }),
+        '',
+      ].join('\n'),
+    )
+    const loaded = await loadTranscriptFile(file)
+    expect(loaded.promptContexts.get(sid as any)?.promptProjectRoot).toBe('/a')
+    expect(loaded.promptContexts.get(otherSid as any)?.promptProjectRoot).toBe(
+      '/b',
+    )
+    expect(loaded.skillListings.get(sid as any)?.content).toBe('listing-a')
+    expect(loaded.skillListings.get(otherSid as any)?.content).toBe('listing-b')
+  })
+
+  test('loaders carry promptContext and skillListing through', async () => {
+    const file = getTranscriptPathForSession(sid)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'user',
+          uuid: messageUuid,
+          parentUuid: null,
+          isSidechain: false,
+          sessionId: sid,
+          cwd: '/tail',
+          timestamp: new Date().toISOString(),
+          userType: 'external',
+          version: '0.0.0',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'prompt-context',
+          sessionId: sid,
+          promptProjectRoot: '/project',
+          systemPromptSections: [['memory', 'memory-section']],
+          userContext: { currentDate: 'date-x' },
+          systemContext: { gitStatus: 'snapshot' },
+        }),
+        JSON.stringify({
+          type: 'skill-listing',
+          sessionId: sid,
+          content: 'skills-content',
+          skillCount: 3,
+        }),
+        '',
+      ].join('\n'),
+    )
+
+    const log = await getLastSessionLog(asUuid(sid))
+    expect(log?.promptContext?.promptProjectRoot).toBe('/project')
+    expect(log?.promptContext?.userContext.currentDate).toBe('date-x')
+    expect(log?.skillListing?.content).toBe('skills-content')
+    expect(log?.skillListing?.skillCount).toBe(3)
+
+    const fromFile = await loadTranscriptFromFile(file)
+    expect(fromFile.promptContext?.systemContext.gitStatus).toBe('snapshot')
+    expect(fromFile.skillListing?.content).toBe('skills-content')
+  })
+})
+
+describe('prompt-cwd propagation through LogOption loaders', () => {
+  const sid = '33333333-3333-4333-8333-333333333333'
+  const messageUuid = '44444444-4444-4444-8444-444444444444'
+
+  function writeTranscript(): string {
+    // getLastSessionLog resolves the path via getProjectDir(originalCwd);
+    // compute it the same way instead of guessing the projects layout.
+    const file = getTranscriptPathForSession(sid)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'user',
+          uuid: messageUuid,
+          parentUuid: null,
+          isSidechain: false,
+          sessionId: sid,
+          cwd: '/tail',
+          timestamp: new Date().toISOString(),
+          userType: 'external',
+          version: '0.0.0',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'prompt-cwd',
+          sessionId: sid,
+          promptCwd: '/rendered',
+        }),
+        '',
+      ].join('\n'),
+    )
+    return file
+  }
+
+  test('getLastSessionLog carries the persisted prompt cwd', async () => {
+    writeTranscript()
+    const log = await getLastSessionLog(asUuid(sid))
+    expect(log?.promptCwd).toBe('/rendered')
+  })
+
+  test('loadTranscriptFromFile carries the persisted prompt cwd', async () => {
+    const file = writeTranscript()
+    const log = await loadTranscriptFromFile(file)
+    expect(log.promptCwd).toBe('/rendered')
   })
 })

@@ -191,6 +191,25 @@ export function resolveAppliedEffort(
 }
 
 /**
+ * Effort is request-building only: when thinking is disabled for the
+ * request (/thinking off, /config "no thinking", or
+ * CLAUDE_CODE_DISABLE_THINKING) the effort parameter must NOT be sent.
+ * It has no effect without thinking, and self-hosted chat templates may
+ * reject the reasoning-effort field outright (400 from vLLM: "reasoning
+ * effort 'medium' is not supported by the loaded chat template").
+ */
+export function resolveRequestEffort(
+  model: string,
+  effortValue: EffortValue | undefined,
+  thinkingEnabled: boolean,
+): EffortValue | undefined {
+  if (!thinkingEnabled) {
+    return undefined
+  }
+  return resolveAppliedEffort(model, effortValue)
+}
+
+/**
  * Resolve the effort level to show the user. Wraps resolveAppliedEffort
  * with the 'high' fallback (what the API uses when no effort param is sent).
  * Single source of truth for the status bar and /effort output (CC-1088).

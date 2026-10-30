@@ -51,6 +51,9 @@ export type LogOption = {
   worktreeSession?: PersistedWorktreeSession | null // Worktree state at session end (null = exited, undefined = never entered)
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
   goal?: GoalState // Active goal state at session end (for resume)
+  promptCwd?: string // Cwd the system prompt env section was last rendered with
+  promptContext?: PersistedPromptContext // Environment-derived prompt prefix snapshot
+  skillListing?: PersistedSkillListing // Initial skills reminder injected at the top
 }
 
 export type SummaryMessage = {
@@ -139,6 +142,59 @@ export type ModeEntry = {
   type: 'mode'
   sessionId: UUID
   mode: 'coordinator' | 'normal'
+}
+
+/**
+ * The cwd the system prompt's environment section was last rendered with.
+ *
+ * That section is cached per process and only re-renders on process start,
+ * resume, and /compact, so the shell's live cwd can drift away from the value
+ * baked into the leading prompt tokens. Persisting the rendered value lets a
+ * later resume restore the same prefix instead of guessing from the tail of
+ * the transcript. Last-wins on read.
+ */
+export type PromptCwdMessage = {
+  type: 'prompt-cwd'
+  sessionId: UUID
+  promptCwd: string
+}
+
+/**
+ * Snapshot of everything environment-derived that ends up in the leading
+ * prompt tokens: the project root (memory/skills paths), the memoized system
+ * prompt sections, and the user/system context blocks (CLAUDE.md, date, git
+ * status). Captured at every render point; replayed on resume.
+ *
+ * Without this, a resume in a different cwd/date/repo state re-renders a
+ * different prefix and the inference server has to re-prefill the whole
+ * conversation even when the conversation itself is unchanged. Last-wins.
+ */
+export type PersistedPromptContext = {
+  promptProjectRoot: string
+  systemPromptSections: Array<[string, string | null]>
+  userContext: Record<string, string>
+  systemContext: Record<string, string>
+}
+
+export type PromptContextMessage = PersistedPromptContext & {
+  type: 'prompt-context'
+  sessionId: UUID
+}
+
+/**
+ * The initial "skills available" reminder. It is injected as an ephemeral
+ * attachment at the top of the first user message and is not part of the
+ * persisted conversation, so a resumed process must re-inject the same bytes
+ * at the same position to keep the leading prompt tokens stable.
+ */
+export type PersistedSkillListing = {
+  content: string
+  skillCount: number
+}
+
+export type SkillListingMessage = PersistedSkillListing & {
+  type: 'skill-listing'
+  sessionId: UUID
 }
 
 /**
@@ -383,6 +439,9 @@ export type Entry =
   | QueueOperationMessage
   | SpeculationAcceptMessage
   | ModeEntry
+  | PromptCwdMessage
+  | PromptContextMessage
+  | SkillListingMessage
   | WorktreeStateEntry
   | ContentReplacementEntry
   | ContextCollapseCommitEntry

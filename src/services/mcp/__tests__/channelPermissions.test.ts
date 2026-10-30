@@ -167,7 +167,7 @@ describe('filterPermissionRelayClients', () => {
     const clients = [
       {
         type: 'connected',
-        name: 'plugin:weixin:weixin',
+        name: 'plugin:example:example',
         capabilities: {
           experimental: {
             'claude/channel': {},

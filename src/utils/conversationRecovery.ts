@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
-import { relative } from 'path'
+import { relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { addInvokedSkill } from '../bootstrap/state.js'
 import { asSessionId } from '../types/ids.js'
@@ -9,6 +9,8 @@ import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
   LogOption,
+  PersistedPromptContext,
+  PersistedSkillListing,
   PersistedWorktreeSession,
   SerializedMessage,
 } from '../types/logs.js'
@@ -19,6 +21,7 @@ import type {
 } from '../types/message.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import {
+  createAttachmentMessage,
   suppressNextSkillDiscovery,
   suppressNextSkillListing,
 } from './attachments.js'
@@ -33,6 +36,7 @@ import {
   filterOrphanedThinkingOnlyMessages,
   filterUnresolvedToolUses,
   filterWhitespaceOnlyAssistantMessages,
+  findLastCompactBoundaryIndex,
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
@@ -49,6 +53,7 @@ import {
   loadMessageLogs,
   loadTranscriptFile,
   removeExtraFields,
+  resolvePromptCwd,
 } from './sessionStorage.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
 
@@ -420,15 +425,70 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
     }
   }
 
-  // Unconditionally suppress skill_listing and skill_discovery on resume.
-  // Attachments are not persisted to transcript for non-ant users
-  // (isLoggableMessage filters them out), so the per-type checks above may
-  // never find them even though the prior process already injected the content
-  // into the conversation via <system-reminder> blocks. Without this, every
-  // resume re-injects ~1K tokens of duplicate content and busts the Anthropic
-  // prompt cache prefix (which requires 100% byte-identical segments).
-  suppressNextSkillListing()
+  // skill_discovery is still suppressed unconditionally: its content is not
+  // persisted either, but unlike the skill listing it never occupied a stable
+  // position in the leading prompt, so re-injecting it only adds tail noise.
   suppressNextSkillDiscovery()
+}
+
+/**
+ * Replay the initial skills reminder at the position the previous process
+ * injected it (top of the first user message). The reminder is an ephemeral
+ * attachment and is not persisted as a message, so without this a resumed
+ * prompt starts with different bytes and the inference server cannot reuse
+ * the cached prefix. normalizeMessagesForAPI bubbles attachments up to the
+ * first assistant/tool_result boundary, restoring the original order.
+ *
+ * Post-compact prompts start at the summary, and the listing is never
+ * re-injected after a compaction — replaying it above the summary would
+ * diverge from the cached prefix, so the attachment pass announces a fresh
+ * listing at the tail instead.
+ *
+ * Shared by the load-time resume flow and the in-session /resume handler.
+ */
+export function replayPersistedSkillListing(
+  messages: Message[],
+  skillListing: PersistedSkillListing | undefined,
+): PersistedSkillListing | undefined {
+  if (!skillListing) return undefined
+  const firstUser = messages.find(m => m.type === 'user')
+  const firstUserContent = firstUser?.message?.content
+  const firstUserText = Array.isArray(firstUserContent)
+    ? firstUserContent
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .join('')
+    : typeof firstUserContent === 'string'
+      ? firstUserContent
+      : ''
+  const compacted =
+    findLastCompactBoundaryIndex(messages) !== -1 ||
+    firstUserText
+      .trimStart()
+      .startsWith(
+        'This session is being continued from a previous conversation',
+      )
+  if (compacted) return undefined
+  const hasListingInTranscript = messages.some(
+    m => m.type === 'attachment' && m.attachment?.type === 'skill_listing',
+  )
+  if (hasListingInTranscript) return undefined
+
+  const listingMessage = createAttachmentMessage({
+    type: 'skill_listing',
+    content: skillListing.content,
+    skillCount: skillListing.skillCount,
+    isInitial: true,
+  })
+  const firstUserIndex = messages.findIndex(m => m.type === 'user')
+  messages.splice(
+    firstUserIndex === -1 ? 0 : firstUserIndex + 1,
+    0,
+    listingMessage,
+  )
+  // Consume the fire-once latch so the attachment pass does not append a
+  // second listing at the tail of this turn.
+  suppressNextSkillListing()
+  return skillListing
 }
 
 /**
@@ -445,8 +505,17 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
 export async function loadMessagesFromJsonlPath(path: string): Promise<{
   messages: SerializedMessage[]
   sessionId: UUID | undefined
+  promptCwd: string | undefined
+  promptContext: PersistedPromptContext | undefined
+  skillListing: PersistedSkillListing | undefined
 }> {
-  const { messages: byUuid, leafUuids } = await loadTranscriptFile(path)
+  const {
+    messages: byUuid,
+    leafUuids,
+    promptCwds,
+    promptContexts,
+    skillListings,
+  } = await loadTranscriptFile(path)
   let tip: (typeof byUuid extends Map<UUID, infer T> ? T : never) | null = null
   let tipTs = 0
   for (const m of byUuid.values()) {
@@ -457,14 +526,26 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
       tip = m
     }
   }
-  if (!tip) return { messages: [], sessionId: undefined }
+  if (!tip) {
+    return {
+      messages: [],
+      sessionId: undefined,
+      promptCwd: undefined,
+      promptContext: undefined,
+      skillListing: undefined,
+    }
+  }
   const chain = buildConversationChain(byUuid, tip)
+  // Leaf's sessionId — forked sessions copy chain[0] from the source
+  // transcript, so the root retains the source session's ID. Matches
+  // loadFullLog's mostRecentLeaf.sessionId.
+  const sessionId = tip.sessionId as UUID | undefined
   return {
     messages: removeExtraFields(chain),
-    // Leaf's sessionId — forked sessions copy chain[0] from the source
-    // transcript, so the root retains the source session's ID. Matches
-    // loadFullLog's mostRecentLeaf.sessionId.
-    sessionId: tip.sessionId as UUID | undefined,
+    sessionId,
+    promptCwd: sessionId ? promptCwds.get(sessionId) : undefined,
+    promptContext: sessionId ? promptContexts.get(sessionId) : undefined,
+    skillListing: sessionId ? skillListings.get(sessionId) : undefined,
   }
 }
 
@@ -507,6 +588,16 @@ export async function loadConversationForResume(
   prRepository?: string
   // Full path to the session file (for cross-directory resume)
   fullPath?: string
+  // Transcript the metadata was loaded from (set for --resume <path.jsonl>,
+  // where there is no LogOption/fullPath). Used only for write-dedup.
+  sourceTranscriptPath?: string
+  // Working directory the system prompt's environment section was last
+  // rendered with, so a resumed session reproduces the same leading tokens.
+  promptCwd?: string
+  // Environment-derived leading prompt tokens recorded at the last render.
+  promptContext?: PersistedPromptContext
+  // Initial skills reminder, re-injected at the top on resume.
+  skillListing?: PersistedSkillListing
   // Goal state for hydration on resume
   goal?: import('../types/logs.js').GoalState
 } | null> {
@@ -514,6 +605,10 @@ export async function loadConversationForResume(
     let log: LogOption | null = null
     let messages: Message[] | null = null
     let sessionId: UUID | undefined
+    let sourcePromptCwd: string | undefined
+    let sourcePromptContext: PersistedPromptContext | undefined
+    let sourceSkillListing: PersistedSkillListing | undefined
+    let sourceTranscriptPath: string | undefined
 
     if (source === undefined) {
       // --continue: most recent session, skipping live --bg/daemon sessions
@@ -548,6 +643,13 @@ export async function loadConversationForResume(
       const loaded = await loadMessagesFromJsonlPath(sourceJsonlFile)
       messages = loaded.messages
       sessionId = loaded.sessionId
+      sourcePromptCwd = loaded.promptCwd
+      sourcePromptContext = loaded.promptContext
+      sourceSkillListing = loaded.skillListing
+      // Resolve now, while the process cwd is still the launch directory
+      // (restoreSessionCwd may chdir later); the path is only used to avoid
+      // re-appending metadata already present in this file.
+      sourceTranscriptPath = resolve(sourceJsonlFile)
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -584,6 +686,16 @@ export async function loadConversationForResume(
       checkResumeConsistency(messages)
     }
 
+    // Restore the directory the system prompt was last rendered with — not
+    // the shell's final cwd. `env_info_simple` is a cached prompt section, so
+    // a `cd` changes what entries record without re-rendering the prompt;
+    // restoring the tail could point at a directory no request ever used and
+    // move the cwd line the server's prefix cache depends on.
+    const promptCwd = resolvePromptCwd(
+      messages!,
+      log?.promptCwd ?? sourcePromptCwd,
+    )
+
     // Restore skill state from invoked_skills attachments before deserialization.
     // This ensures skills survive multiple compaction cycles after resume.
     restoreSkillStateFromMessages(messages!)
@@ -591,6 +703,11 @@ export async function loadConversationForResume(
     // Deserialize messages to handle unresolved tool uses and ensure proper format
     const deserialized = deserializeMessagesWithInterruptDetection(messages!)
     messages = deserialized.messages
+
+    const skillListing = replayPersistedSkillListing(
+      messages,
+      log?.skillListing ?? sourceSkillListing,
+    )
 
     // Process session start hooks for resume
     const hookMessages = await processSessionStartHooks('resume', { sessionId })
@@ -620,6 +737,10 @@ export async function loadConversationForResume(
       prRepository: log?.prRepository,
       // Include full path for cross-directory resume
       fullPath: log?.fullPath,
+      sourceTranscriptPath,
+      promptCwd,
+      promptContext: log?.promptContext ?? sourcePromptContext,
+      skillListing,
       // Goal state for hydration on resume
       goal: log?.goal,
     }

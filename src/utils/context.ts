@@ -9,9 +9,12 @@ import {
   getChatGPTModelContextWindow,
 } from './model/chatgptModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { getMaxContextTokensOverride } from './contextWindowOverride.js'
 
 // Model context window size (200k tokens for all models right now)
-export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+//export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 256 * 1024
+//export const MODEL_CONTEXT_WINDOW_DEFAULT = 1024 * 1024
 
 // Maximum output tokens for compact operations
 export const COMPACT_MAX_OUTPUT_TOKENS = 20_000
@@ -75,6 +78,24 @@ export function getContextWindowForModel(
     }
   }
 
+  // Session override set via /max_context_set — same semantics as the env
+  // var: caps the effective window for local decisions (auto-compact etc.)
+  const sessionOverride = getMaxContextTokensOverride()
+  if (sessionOverride !== undefined && sessionOverride > 0) {
+    return sessionOverride
+  }
+
+  return resolveContextWindowForModel(model, betas)
+}
+
+/**
+ * Context window resolution WITHOUT the /max_context_set session override —
+ * the server-reported (or built-in default) capacity of the model.
+ */
+export function resolveContextWindowForModel(
+  model: string,
+  betas?: string[],
+): number {
   // [1m] suffix — explicit client-side opt-in, respected over all detection
   if (has1mContext(model)) {
     return 1_000_000
@@ -95,7 +116,7 @@ export function getContextWindowForModel(
   }
 
   const cap = getModelCapability(model)
-  if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
+  if (cap?.max_input_tokens) {
     if (
       cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
       is1mContextDisabled()

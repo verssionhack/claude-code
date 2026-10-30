@@ -194,6 +194,10 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
+  // Explicit session threshold (e.g. /compact_after): used verbatim and
+  // bypasses the isAutoCompactEnabled() gate — it's a direct user request,
+  // not a heuristic. DISABLE_COMPACT is still honored by autoCompactIfNeeded.
+  thresholdOverride?: number,
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -211,7 +215,7 @@ export async function shouldAutoCompact(
     }
   }
 
-  if (!isAutoCompactEnabled()) {
+  if (thresholdOverride === undefined && !isAutoCompactEnabled()) {
     return false
   }
 
@@ -252,12 +256,16 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model)
+  const threshold = thresholdOverride ?? getAutoCompactThreshold(model)
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
   )
+
+  if (thresholdOverride !== undefined) {
+    return tokenCount >= threshold
+  }
 
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
@@ -274,6 +282,7 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
+  thresholdOverride?: number,
 ): Promise<{
   wasCompacted: boolean
   compactionResult?: CompactionResult
@@ -299,6 +308,7 @@ export async function autoCompactIfNeeded(
     model,
     querySource,
     snipTokensFreed,
+    thresholdOverride,
   )
 
   if (!shouldCompact) {
@@ -309,7 +319,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
+    autoCompactThreshold: thresholdOverride ?? getAutoCompactThreshold(model),
     querySource,
   }
 

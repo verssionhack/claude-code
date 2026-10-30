@@ -28,12 +28,15 @@ import { renameRecordingForSession } from '../utils/asciicast.js';
 import { updateSessionName } from '../utils/concurrentSessions.js';
 import { loadConversationForResume } from '../utils/conversationRecovery.js';
 import { checkCrossProjectResume } from '../utils/crossProjectResume.js';
+import { getCwd } from '../utils/cwd.js';
 import type { FileHistorySnapshot } from '../utils/fileHistory.js';
 import { logError } from '../utils/log.js';
 import { createSystemMessage } from '../utils/messages.js';
 import {
   computeStandaloneAgentContext,
   restoreAgentFromSession,
+  restorePromptContext,
+  restoreSessionCwd,
   restoreWorktreeForResume,
 } from '../utils/sessionRestore.js';
 import {
@@ -43,6 +46,7 @@ import {
   loadAllProjectsMessageLogsProgressive,
   loadSameRepoMessageLogsProgressive,
   recordContentReplacement,
+  recordPromptCwd,
   resetSessionFilePointer,
   restoreSessionMetadata,
   type SessionLogResult,
@@ -292,8 +296,11 @@ export function ResumeConversation({
 
       if (!forkSession) {
         restoreWorktreeForResume(result.worktreeSession);
+        restoreSessionCwd(result.promptCwd);
+        restorePromptContext(result.promptContext);
         if (result.sessionId) {
           adoptResumedSessionFile();
+          recordPromptCwd(getCwd());
         }
       }
 
