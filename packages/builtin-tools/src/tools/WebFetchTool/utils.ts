@@ -439,6 +439,41 @@ export async function getURLMarkdownContent(
 }
 
 /**
+ * Shape of the Tavily Extract response this code reads. The official Tavily
+ * API delivers markdown under results[].content; the compatible endpoint
+ * targeted here returns raw_content, so both are accepted.
+ */
+export type TavilyExtractResponse = {
+  raw_content?: string
+  results?: Array<{ url?: string; raw_content?: string; error?: string }>
+  failed_results?: Array<{ url?: string; error?: string }>
+  error?: string
+  message?: string
+}
+
+// The per-URL failure reason the endpoint reports when extraction yields no
+// content (e.g. a 404 URL lands in failed_results as
+// {url, error: "404 page not found"}). Prefers the entry matching the
+// requested URL.
+export function tavilyExtractFailureReason(
+  data: TavilyExtractResponse | undefined,
+  url: string,
+): string | undefined {
+  if (!data) {
+    return undefined
+  }
+  const failed = data.failed_results ?? []
+  const match = failed.find(entry => entry.url === url)
+  const single = failed.length === 1 ? failed[0] : undefined
+  const reason = (match ?? single)?.error ?? data.results?.[0]?.error
+  if (typeof reason === 'string' && reason.trim()) {
+    return reason
+  }
+  const message = data.error ?? data.message
+  return typeof message === 'string' && message.trim() ? message : undefined
+}
+
+/**
  * Fetch URL content via Tavily Extract API, which directly returns Markdown.
  * This skips the HTML→Markdown conversion (turndown) and the secondary
  * model call (queryHaiku) — Tavily already delivers clean Markdown.
@@ -491,7 +526,7 @@ export async function fetchContentWithTavily(
       ? baseUrl
       : `${baseUrl.replace(/\/$/, '')}/extract`
 
-  const response = await axios.post<{ url: string; raw_content: string }>(
+  const response = await axios.post<TavilyExtractResponse>(
     extractUrl,
     {
       urls: [url],
@@ -513,18 +548,22 @@ export async function fetchContentWithTavily(
   let markdownContent = rawContent
   if (!markdownContent.trim()) {
     // Try to extract from results array
-    const resp = response.data as unknown as {
-      results?: Array<{ raw_content?: string }>
-    }
-    const results = resp.results ?? []
+    const results = response.data?.results ?? []
     if (results.length > 0 && results[0].raw_content) {
       markdownContent = results[0].raw_content
     }
   }
 
   if (!markdownContent.trim()) {
+    // Surface the reason the endpoint reported — e.g. a 404 URL lands in
+    // failed_results as {url, error: "404 page not found"}. Guessing
+    // "may require JavaScript rendering" instead sent the model down the
+    // wrong path.
+    const reason = tavilyExtractFailureReason(response.data, url)
     throw new Error(
-      `Tavily Extract returned empty content for ${url}. The page may require authentication or JavaScript rendering.`,
+      reason
+        ? `Tavily Extract failed for ${url}: ${reason}`
+        : `Tavily Extract returned no content for ${url}. The page may be empty, require authentication, or render its content with JavaScript.`,
     )
   }
 
