@@ -3,16 +3,22 @@ import axios from 'axios'
 import { z } from 'zod/v4'
 import type { ToolResultBlockParam, ToolUseContext, Tool } from 'src/Tool.js'
 import { buildTool, type ToolDef } from 'src/Tool.js'
+import { getSessionId } from 'src/bootstrap/state.js'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import { AbortError } from 'src/utils/errors.js'
 import { lazySchema } from 'src/utils/lazySchema.js'
 import { checkReadPermissionForTool } from 'src/utils/permissions/filesystem.js'
+import { getAskRules, getDenyRules } from 'src/utils/permissions/permissions.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
-import type { PermissionDecision } from 'src/types/permissions.js'
+import type {
+  PermissionDecision,
+  PermissionUpdate,
+} from 'src/types/permissions.js'
 import { resolveSystemoneEndpoint, systemoneTimeoutMs } from './config.js'
 import {
   SYSTEMONE_CONTEXT_CACHE_BYTES,
   SYSTEMONE_CONTEXT_CACHE_ENTRIES,
+  SYSTEMONE_MAX_IMAGES,
   SYSTEMONE_MAX_REQUEST_BYTES,
   SYSTEMONE_MAX_RESPONSE_BYTES,
   SYSTEMONE_MAX_XML_BYTES,
@@ -211,10 +217,20 @@ type State = string | Record<string, unknown> | unknown[]
 type ContextMedia = { files?: string[]; images?: string[] }
 type CachedContext = ContextMedia & { state: State; bytes: number }
 
-// Per-process LRU. Storing the state and its images guarantees that follow-ups
-// resend the exact bytes ninfer needs to restore its prefix.
+// Session-scoped LRU. Storing the state and its images guarantees that
+// follow-ups resend the exact bytes ninfer needs to restore its prefix, while
+// keying by session ID prevents cross-session leakage in long-lived processes.
 const contextCache = new Map<string, CachedContext>()
 let contextCacheBytes = 0
+
+function scopedContextKey(id: string): string {
+  return `${getSessionId()}\u0000${id}`
+}
+
+export function clearSystemoneContextCache(): void {
+  contextCache.clear()
+  contextCacheBytes = 0
+}
 
 function serializedState(state: State): string {
   return typeof state === 'string' ? state : JSON.stringify(state)
@@ -264,16 +280,17 @@ function rememberContext(
   state: State,
   media: ContextMedia,
 ): boolean {
+  const key = scopedContextKey(id)
   const bytes = stateBytes(state) + mediaBytes(media)
-  const existing = contextCache.get(id)
+  const existing = contextCache.get(key)
   if (existing !== undefined) {
-    contextCache.delete(id)
+    contextCache.delete(key)
     contextCacheBytes -= existing.bytes
   }
   if (bytes > SYSTEMONE_CONTEXT_CACHE_BYTES) {
     return false
   }
-  contextCache.set(id, {
+  contextCache.set(key, {
     state: cloneState(state),
     ...cloneMedia(media),
     bytes,
@@ -293,20 +310,34 @@ function rememberContext(
       contextCacheBytes -= evicted.bytes
     }
   }
-  return contextCache.has(id)
+  return contextCache.has(key)
 }
 
 function recallContext(
   id: string,
 ): { state: State; media: ContextMedia } | undefined {
-  const cached = contextCache.get(id)
+  const key = scopedContextKey(id)
+  const cached = contextCache.get(key)
   if (cached === undefined) {
     return undefined
   }
   // Refresh LRU position.
-  contextCache.delete(id)
-  contextCache.set(id, cached)
+  contextCache.delete(key)
+  contextCache.set(key, cached)
   return { state: cloneState(cached.state), media: cloneMedia(cached) }
+}
+
+function sanitizeUrlForError(raw: string): string {
+  try {
+    const parsed = new URL(raw)
+    if (parsed.username || parsed.password) {
+      parsed.username = '***'
+      parsed.password = ''
+    }
+    return parsed.toString()
+  } catch {
+    return raw
+  }
 }
 
 function extractError(data: unknown): string {
@@ -315,15 +346,21 @@ function extractError(data: unknown): string {
     if (error !== null && typeof error === 'object') {
       const message = (error as { message?: unknown }).message
       const code = (error as { code?: unknown }).code
-      if (typeof message === 'string') {
+      if (typeof message === 'string' && message.trim()) {
         return typeof code === 'string' ? `${message} (${code})` : message
       }
     }
-    if (typeof error === 'string') {
+    if (typeof error === 'string' && error.trim()) {
       return error
     }
   }
-  return typeof data === 'string' ? data : jsonStringify(data)
+  if (typeof data === 'string') {
+    return data.trim() || 'Empty error response'
+  }
+  if (data === undefined || data === null) {
+    return 'Empty error response'
+  }
+  return jsonStringify(data) || 'Unknown error response'
 }
 
 function describeError(error: unknown): string {
@@ -365,7 +402,10 @@ export function combineImagePermissionDecisions(
   decisions: PermissionDecision[],
 ): PermissionDecision | undefined {
   const askMessages: string[] = []
+  const suggestions: PermissionUpdate[] = []
   let singleAsk: PermissionDecision | undefined
+  let ruleAskReason: PermissionDecision['decisionReason']
+  let firstAskReason: PermissionDecision['decisionReason']
   let askCount = 0
   for (const decision of decisions) {
     if (decision.behavior === 'deny') {
@@ -375,6 +415,24 @@ export function combineImagePermissionDecisions(
       askCount += 1
       singleAsk = decision
       askMessages.push(decision.message)
+      if (decision.suggestions) {
+        suggestions.push(...decision.suggestions)
+      }
+      if (decision.decisionReason) {
+        if (firstAskReason === undefined) {
+          firstAskReason = decision.decisionReason
+        }
+        // Preserve bypass-immune rule-based ask reasons (e.g. Read(.env))
+        // so pairing an ask-ruled path with another out-of-workdir path never
+        // strips decisionReason and bypasses confirmation.
+        if (
+          ruleAskReason === undefined &&
+          decision.decisionReason.type === 'rule' &&
+          decision.decisionReason.rule.ruleBehavior === 'ask'
+        ) {
+          ruleAskReason = decision.decisionReason
+        }
+      }
     }
   }
   if (askCount === 0) {
@@ -383,9 +441,12 @@ export function combineImagePermissionDecisions(
   if (askCount === 1) {
     return singleAsk
   }
+  const decisionReason = ruleAskReason ?? firstAskReason
   return {
     behavior: 'ask',
     message: [...new Set(askMessages)].join('\n'),
+    ...(decisionReason !== undefined ? { decisionReason } : {}),
+    ...(suggestions.length > 0 ? { suggestions } : {}),
   }
 }
 
@@ -394,7 +455,10 @@ export const SystemoneTool = buildTool({
   searchHint:
     'typed decisions choice score yes-no classify route probabilities ninfer',
   maxResultSizeChars: 100_000,
-  strict: true,
+  // Input schema uses z.record / z.unknown / z.discriminatedUnion which emit
+  // propertyNames/oneOf/open additionalProperties incompatible with Anthropic
+  // strict tool-use validation.
+  strict: false,
 
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -418,13 +482,22 @@ export const SystemoneTool = buildTool({
     for (const key of ['files', 'images']) {
       const sources = input[key]
       if (Array.isArray(sources)) {
-        input[key] = sources.map(source =>
-          typeof source === 'string' ? expandImageSource(source) : source,
-        )
+        input[key] = sources.map(source => {
+          if (typeof source !== 'string') return source
+          try {
+            return expandImageSource(source)
+          } catch {
+            return source
+          }
+        })
       }
     }
     if (typeof input.state_path === 'string') {
-      input.state_path = expandStateSource(input.state_path)
+      try {
+        input.state_path = expandStateSource(input.state_path)
+      } catch {
+        // Leave invalid paths untouched; call()/validateInput rejects them.
+      }
     }
   },
   // Reading file paths must honor the same read rules as Read: the model can
@@ -435,21 +508,48 @@ export const SystemoneTool = buildTool({
       return { behavior: 'allow', updatedInput: input }
     }
     const toolPermissionContext = context.getAppState().toolPermissionContext
+    // Honor blanket `Read` deny/ask rules (which have ruleContent === undefined
+    // and are not matched by checkReadPermissionForTool's pattern lookup).
+    const blanketReadDeny = getDenyRules(toolPermissionContext).find(
+      r =>
+        r.ruleValue.toolName === 'Read' &&
+        r.ruleValue.ruleContent === undefined,
+    )
+    if (blanketReadDeny) {
+      return {
+        behavior: 'deny',
+        message:
+          'Permission to read files has been denied by a Read deny rule.',
+        decisionReason: { type: 'rule', rule: blanketReadDeny },
+      }
+    }
+    const decisions: PermissionDecision[] = paths.map(path =>
+      checkReadPermissionForTool(
+        {
+          name: SYSTEMONE_TOOL_NAME,
+          getPath: () => path,
+        } as unknown as Tool,
+        { file_path: path },
+        toolPermissionContext,
+      ),
+    )
+    const blanketReadAsk = getAskRules(toolPermissionContext).find(
+      r =>
+        r.ruleValue.toolName === 'Read' &&
+        r.ruleValue.ruleContent === undefined,
+    )
+    if (blanketReadAsk) {
+      decisions.push({
+        behavior: 'ask',
+        message:
+          'Permission to read files requires confirmation by a Read ask rule.',
+        decisionReason: { type: 'rule', rule: blanketReadAsk },
+      })
+    }
     // Check every path: a deny anywhere must win, even when an earlier path
     // only asks. Returning early on ask would let the approved call read a
     // later denied file.
-    const decision = combineImagePermissionDecisions(
-      paths.map(path =>
-        checkReadPermissionForTool(
-          {
-            name: SYSTEMONE_TOOL_NAME,
-            getPath: () => path,
-          } as unknown as Tool,
-          { file_path: path },
-          toolPermissionContext,
-        ),
-      ),
-    )
+    const decision = combineImagePermissionDecisions(decisions)
     if (decision === undefined) {
       return { behavior: 'allow', updatedInput: input }
     }
@@ -459,12 +559,15 @@ export const SystemoneTool = buildTool({
     return { ...decision, updatedInput: input }
   },
   toAutoClassifierInput(input: Input) {
+    const paths = readPathSources(input)
+    const pathsSuffix =
+      paths.length > 0 ? ` paths=[${paths.join(', ').slice(0, 400)}]` : ''
     if (input.request_xml !== undefined) {
-      return 'Systemone: xml request'
+      return `Systemone: xml request${pathsSuffix}`
     }
     return `Systemone: ${Object.keys(input.questions ?? {})
       .join(', ')
-      .slice(0, 200)}`
+      .slice(0, 200)}${pathsSuffix}`
   },
 
   async description() {
@@ -537,9 +640,9 @@ export const SystemoneTool = buildTool({
     }
 
     if (state === undefined) {
+      const imageCount =
+        (request.files?.length ?? 0) + (request.images?.length ?? 0)
       if (contextId === undefined) {
-        const imageCount =
-          (request.files?.length ?? 0) + (request.images?.length ?? 0)
         if (imageCount === 0) {
           return localError(
             'Provide state, state_path, or images on the first call, or a context_id returned by a previous call',
@@ -550,24 +653,33 @@ export const SystemoneTool = buildTool({
       } else {
         recalled = recallContext(contextId)
         if (recalled === undefined) {
-          return localError(
-            `Unknown context_id "${contextId}". Pass state or images again to start a new context.`,
-          )
+          if (imageCount > 0) {
+            // Allow starting a new image-only context with a caller-supplied context_id.
+            state = ''
+          } else {
+            return localError(
+              `Unknown context_id "${contextId}". Pass state or images again to start a new context.`,
+            )
+          }
+        } else {
+          state = recalled.state
         }
-        state = recalled.state
       }
     }
 
     let files: string[] | undefined
     let images: string[] | undefined
     try {
+      const imageBudget = { usedBytes: 0 }
       files = await resolveImageSources(
         request.files,
         context.abortController.signal,
+        imageBudget,
       )
       images = await resolveImageSources(
         request.images,
         context.abortController.signal,
+        imageBudget,
       )
     } catch (error) {
       if (context.abortController.signal.aborted) {
@@ -581,20 +693,14 @@ export const SystemoneTool = buildTool({
       // prefix; omitting it changes the prompt and breaks ninfer's reuse.
       files ??= recalled.media.files
       images ??= recalled.media.images
+      if ((files?.length ?? 0) + (images?.length ?? 0) > SYSTEMONE_MAX_IMAGES) {
+        return localError(
+          `Provide at most ${SYSTEMONE_MAX_IMAGES} images across files and images`,
+        )
+      }
     } else if (contextId === undefined) {
       contextId = autoContextId(state, { files, images })
     }
-
-    const cached =
-      contextId !== undefined && state !== undefined
-        ? rememberContext(contextId, state, { files, images })
-        : false
-    const advertisedContextId =
-      cached && contextId !== undefined ? contextId : undefined
-    const notice =
-      contextId !== undefined && !cached
-        ? 'The context is too large to cache under context_id; resend state, state_path, and images on follow-up calls.'
-        : undefined
 
     const body: Record<string, unknown> = {
       state,
@@ -639,6 +745,7 @@ export const SystemoneTool = buildTool({
         signal: context.abortController.signal,
         timeout: systemoneTimeoutMs(process.env.SYSTEMONE_TIMEOUT_MS),
         validateStatus: () => true,
+        maxRedirects: 0,
         maxContentLength: SYSTEMONE_MAX_RESPONSE_BYTES,
         maxBodyLength: SYSTEMONE_MAX_REQUEST_BYTES,
       })
@@ -646,6 +753,27 @@ export const SystemoneTool = buildTool({
         throw new AbortError()
       }
       if (response.status >= 200 && response.status < 300) {
+        if (response.data === null || typeof response.data !== 'object') {
+          return {
+            data: {
+              status: response.status,
+              error: `Unexpected non-JSON response from ${sanitizeUrlForError(endpoint.url)}`,
+              body: response.data,
+            },
+          }
+        }
+        // Only cache the context after the server accepts the request so failed
+        // calls never overwrite or evict valid cached contexts.
+        const cached =
+          contextId !== undefined && state !== undefined
+            ? rememberContext(contextId, state, { files, images })
+            : false
+        const advertisedContextId =
+          cached && contextId !== undefined ? contextId : undefined
+        const notice =
+          contextId !== undefined && !cached
+            ? 'The context is too large to cache under context_id; resend state, state_path, and images on follow-up calls.'
+            : undefined
         return {
           data: {
             status: response.status,
@@ -671,7 +799,7 @@ export const SystemoneTool = buildTool({
       return {
         data: {
           status: 0,
-          error: `${describeError(error)} (is ninfer-serve running at ${endpoint.url}?)`,
+          error: `${describeError(error)} (is ninfer-serve running at ${sanitizeUrlForError(endpoint.url)}?)`,
         },
       }
     }

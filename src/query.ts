@@ -1649,10 +1649,14 @@ async function* queryLoop(
 
       // /compact_after: the turn ended naturally — if the context has
       // reached the user-configured length, compact now so the next turn
-      // starts from the summarized context. Percentages resolve against the
-      // effective window at check time, which adapts to the server-reported
-      // max_input_tokens (model capabilities cache).
-      const compactAfter = toolUseContext.getAppState().compactAfter
+      // starts from the summarized context. Restricted to main-thread queries
+      // so terminating subagents and cache-sharing forks don't trigger a
+      // wasted compaction + global runPostCompactCleanup mid-session.
+      const isMainThreadForCompactAfter =
+        querySource.startsWith('repl_main_thread') || querySource === 'sdk'
+      const compactAfter = isMainThreadForCompactAfter
+        ? toolUseContext.getAppState().compactAfter
+        : undefined
       if (compactAfter) {
         const effectiveWindow = getEffectiveContextWindowSize(currentModel)
         const threshold =
@@ -1660,7 +1664,10 @@ async function* queryLoop(
             ? Math.floor(effectiveWindow * (compactAfter.value / 100))
             : compactAfter.value
         const fullMessages = [...messagesForQuery, ...assistantMessages]
-        if (tokenCountWithEstimation(fullMessages) >= threshold) {
+        if (
+          threshold > 0 &&
+          tokenCountWithEstimation(fullMessages) >= threshold
+        ) {
           const { compactionResult, consecutiveFailures } =
             await deps.autocompact(
               fullMessages,

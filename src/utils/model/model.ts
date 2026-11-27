@@ -81,6 +81,9 @@ export function getSmallFastModel(): ModelName {
   if (process.env.ANTHROPIC_SMALL_FAST_MODEL) {
     return process.env.ANTHROPIC_SMALL_FAST_MODEL
   }
+  if (provider === 'firstParty' && process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
+    return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  }
   // Custom endpoint (self-hosted gateway, local inference server): such a
   // backend usually serves one model regardless of the id it is handed, so an
   // auxiliary call (tool-use summary, session title, side query) naming a second
@@ -89,7 +92,7 @@ export function getSmallFastModel(): ModelName {
   // forces a full re-prefill. Name the session's own model instead. Real
   // api.anthropic.com still gets Haiku, whose small-model probes depend on it.
   if (provider === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
-    return getMainLoopModel()
+    return getMainLoopModel().replace(/\[1m\]$/i, '')
   }
   return getDefaultHaikuModel()
 }

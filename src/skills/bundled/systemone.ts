@@ -25,7 +25,6 @@ export function registerSystemoneSkill(): void {
     whenToUse:
       'When the user asks for a typed classification, routing, yes/no, or rating decision from the local ninfer model, or explicitly invokes /systemone.',
     argumentHint: '[decision request]',
-    allowedTools: ['Systemone'],
     userInvocable: true,
     async getPromptForCommand(args) {
       let prompt = SYSTEMONE_PROMPT

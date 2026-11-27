@@ -24,7 +24,13 @@ type ParseResult =
   | { ok: false; error: string }
 
 function parseCompactAfterArg(arg: string): ParseResult {
-  if (arg === 'off' || arg === 'reset' || arg === 'clear' || arg === 'none') {
+  const lower = arg.toLowerCase()
+  if (
+    lower === 'off' ||
+    lower === 'reset' ||
+    lower === 'clear' ||
+    lower === 'none'
+  ) {
     return { ok: true, off: true }
   }
 
@@ -63,8 +69,14 @@ function describeConfig(config: CompactAfterConfig): string {
 
 export const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim()
+  const lower = arg.toLowerCase()
 
-  if (arg === '' || arg === 'help' || arg === '-h' || arg === '--help') {
+  if (
+    lower === '' ||
+    lower === 'help' ||
+    lower === '-h' ||
+    lower === '--help'
+  ) {
     const current = context.getAppState().compactAfter
     const status = current
       ? `Currently: ${describeConfig(current)}`

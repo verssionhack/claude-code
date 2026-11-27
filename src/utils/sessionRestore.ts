@@ -353,6 +353,7 @@ function clearCwdDerivedCaches(): void {
   clearMemoryFileCaches()
   clearSystemPromptSections()
   clearPersistedPromptContext()
+  setLastEmittedDate(null)
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
   getGitStatus.cache.clear?.()
@@ -377,13 +378,16 @@ function clearCwdDerivedCaches(): void {
  */
 export function restoreWorktreeForResume(
   worktreeSession: PersistedWorktreeSession | null | undefined,
-): void {
+): boolean {
   const fresh = getCurrentWorktreeSession()
   if (fresh) {
     saveWorktreeState(fresh)
-    return
+    // Clear caches so stale outgoing-session state doesn't leak when --worktree
+    // created a fresh worktree taking precedence over the resumed transcript.
+    clearCwdDerivedCaches()
+    return true
   }
-  if (!worktreeSession) return
+  if (!worktreeSession) return false
 
   try {
     process.chdir(worktreeSession.worktreePath)
@@ -392,7 +396,7 @@ export function restoreWorktreeForResume(
     // reAppendSessionMetadata records "exited" instead of re-persisting
     // a path that no longer exists.
     saveWorktreeState(null)
-    return
+    return false
   }
 
   setCwd(worktreeSession.worktreePath)
@@ -406,6 +410,7 @@ export function restoreWorktreeForResume(
   // The /resume slash command calls this mid-session after caches have been
   // populated against the old cwd; the `-r` picker's prefetches do the same.
   clearCwdDerivedCaches()
+  return false
 }
 
 /**
@@ -429,11 +434,11 @@ export function restoreSessionCwd(cwd: string | undefined): void {
   try {
     // TOCTOU-safe existence check: throws ENOENT when the directory is gone.
     process.chdir(cwd)
+    setCwd(cwd)
   } catch {
     clearCwdDerivedCaches()
     return
   }
-  setCwd(cwd)
   // Project identity follows the session, not the launch directory: the
   // auto-memory path and the skills discovered for the prompt are keyed on
   // projectRoot, so leaving it at the launch cwd rewrites those sections.
@@ -550,12 +555,18 @@ export async function processResumedConversation(
 ): Promise<ProcessedResume> {
   // Session-scoped tuning saved by the previous run of this session id
   // (/model, /temperature, /top-k…, /thinking, /compact_after,
-  // /max_context_set). Keyed on the source session id so forks inherit too.
+  // /max_context_set, /api_timeout). Keyed on the source session id so forks
+  // inherit too. Capture whether CLI --model was passed BEFORE applying saved
+  // overrides, otherwise applySessionOverrides populates mainLoopModelOverride
+  // and defeats the guard when building initialState below.
+  const hadCliModelOverride = Boolean(getMainLoopModelOverride())
   const savedOverrides = await loadSessionOverrides(
     opts.sessionIdOverride ?? result.sessionId ?? getSessionId(),
   )
   if (savedOverrides) {
-    applySessionOverrides(savedOverrides)
+    applySessionOverrides(savedOverrides, {
+      allowModelOverride: !hadCliModelOverride,
+    })
   }
 
   // Match coordinator/normal mode to the resumed session
@@ -603,7 +614,9 @@ export async function processResumedConversation(
   // would delete a worktree the original session still references — so
   // strip worktreeSession from the fork path so the cache stays unset.
   restoreSessionMetadata(
-    opts.forkSession ? { ...result, worktreeSession: undefined } : result,
+    opts.forkSession
+      ? { ...result, worktreeSession: undefined, promptContext: undefined }
+      : result,
   )
 
   if (feature('GOAL') && result.goal) {
@@ -623,13 +636,15 @@ export async function processResumedConversation(
     // Done after restoreSessionMetadata (which caches the worktree state
     // from the transcript) so if the directory is gone we can override
     // the cache before adoptResumedSessionFile writes it.
-    restoreWorktreeForResume(result.worktreeSession)
-    // A plain session's shell may have cd'd mid-conversation; match the
-    // directory its system prompt was last rendered with.
-    restoreSessionCwd(result.promptCwd)
-    // Replay the recorded leading context (sections, CLAUDE.md/date, git
-    // snapshot) so the prefix is byte-identical to the previous process.
-    restorePromptContext(result.promptContext)
+    const usedFreshWorktree = restoreWorktreeForResume(result.worktreeSession)
+    if (!usedFreshWorktree) {
+      // A plain session's shell may have cd'd mid-conversation; match the
+      // directory its system prompt was last rendered with.
+      restoreSessionCwd(result.promptCwd)
+      // Replay the recorded leading context (sections, CLAUDE.md/date, git
+      // snapshot) so the prefix is byte-identical to the previous process.
+      restorePromptContext(result.promptContext)
+    }
 
     // Point sessionFile at the resumed transcript and re-append metadata
     // now. resetSessionFilePointer above nulled it (so the old fresh-session
@@ -705,7 +720,7 @@ export async function processResumedConversation(
       // Explicit CLI --model (bootstrap override set at launch) wins over
       // the saved session model — mirrors restoreAgentFromSession's guard.
       ...(savedOverrides?.model !== undefined &&
-        !getMainLoopModelOverride() && {
+        !hadCliModelOverride && {
           mainLoopModel: savedOverrides.model,
         }),
       ...(savedOverrides?.temperatureOverride !== undefined && {
@@ -719,6 +734,9 @@ export async function processResumedConversation(
       }),
       ...(savedOverrides?.compactAfter !== undefined && {
         compactAfter: savedOverrides.compactAfter,
+      }),
+      ...(savedOverrides?.apiTimeoutMs !== undefined && {
+        apiTimeoutMs: savedOverrides.apiTimeoutMs,
       }),
     },
   }

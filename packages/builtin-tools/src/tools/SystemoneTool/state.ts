@@ -40,11 +40,22 @@ export async function readStateFile(
       `State file "${source}" is ${formatFileSize(size)}; the limit is ${formatFileSize(SYSTEMONE_MAX_STATE_BYTES)}`,
     )
   }
+  let content: string
   try {
-    return await readFile(path, 'utf8')
+    content = await readFile(path, { encoding: 'utf8', signal })
   } catch (error) {
+    if (signal?.aborted) {
+      throw new AbortError()
+    }
     throw new Error(
       `Cannot read state file "${source}": ${errorMessage(error)}`,
     )
   }
+  const actualBytes = Buffer.byteLength(content, 'utf8')
+  if (actualBytes > SYSTEMONE_MAX_STATE_BYTES) {
+    throw new Error(
+      `State file "${source}" is ${formatFileSize(actualBytes)}; the limit is ${formatFileSize(SYSTEMONE_MAX_STATE_BYTES)}`,
+    )
+  }
+  return content
 }

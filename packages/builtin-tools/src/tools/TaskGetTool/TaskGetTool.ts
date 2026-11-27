@@ -13,7 +13,7 @@ import { DESCRIPTION, PROMPT } from './prompt.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    taskId: TaskIdSchema.describe('The ID of the task to retrieve'),
+    taskId: TaskIdSchema().describe('The ID of the task to retrieve'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>

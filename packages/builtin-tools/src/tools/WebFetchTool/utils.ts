@@ -14,7 +14,10 @@ import {
 } from 'src/utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from 'src/utils/settings/settings.js'
 import { asSystemPrompt } from 'src/utils/systemPromptType.js'
-import { parseUserSpecifiedModel } from 'src/utils/model/model.js'
+import {
+  getMainLoopModel,
+  parseUserSpecifiedModel,
+} from 'src/utils/model/model.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 
@@ -439,9 +442,8 @@ export async function getURLMarkdownContent(
 }
 
 /**
- * Shape of the Tavily Extract response this code reads. The official Tavily
- * API delivers markdown under results[].content; the compatible endpoint
- * targeted here returns raw_content, so both are accepted.
+ * Shape of the Tavily Extract response this code reads (`raw_content`,
+ * `results[].raw_content`, and failure fields).
  */
 export type TavilyExtractResponse = {
   raw_content?: string
@@ -449,6 +451,17 @@ export type TavilyExtractResponse = {
   failed_results?: Array<{ url?: string; error?: string }>
   error?: string
   message?: string
+}
+
+const MAX_TAVILY_ERROR_CHARS = 500
+
+function nonEmptyReason(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  return trimmed.length > MAX_TAVILY_ERROR_CHARS
+    ? `${trimmed.slice(0, MAX_TAVILY_ERROR_CHARS)}…`
+    : trimmed
 }
 
 // The per-URL failure reason the endpoint reports when extraction yields no
@@ -459,18 +472,29 @@ export function tavilyExtractFailureReason(
   data: TavilyExtractResponse | undefined,
   url: string,
 ): string | undefined {
-  if (!data) {
+  if (!data || typeof data !== 'object') {
     return undefined
   }
-  const failed = data.failed_results ?? []
+  const failed = Array.isArray(data.failed_results)
+    ? data.failed_results.filter(
+        (entry): entry is { url?: string; error?: string } =>
+          entry !== null && typeof entry === 'object',
+      )
+    : []
   const match = failed.find(entry => entry.url === url)
   const single = failed.length === 1 ? failed[0] : undefined
-  const reason = (match ?? single)?.error ?? data.results?.[0]?.error
-  if (typeof reason === 'string' && reason.trim()) {
-    return reason
-  }
-  const message = data.error ?? data.message
-  return typeof message === 'string' && message.trim() ? message : undefined
+  const firstResult =
+    Array.isArray(data.results) &&
+    data.results[0] !== null &&
+    typeof data.results[0] === 'object'
+      ? data.results[0]
+      : undefined
+  return (
+    nonEmptyReason((match ?? single)?.error) ??
+    nonEmptyReason(firstResult?.error) ??
+    nonEmptyReason(data.error) ??
+    nonEmptyReason(data.message)
+  )
 }
 
 /**
@@ -542,15 +566,24 @@ export async function fetchContentWithTavily(
     throw new AbortError()
   }
 
-  const rawContent = response.data?.raw_content ?? ''
+  const rawContent =
+    typeof response.data?.raw_content === 'string'
+      ? response.data.raw_content
+      : ''
   // If raw_content is a JSON string (extract may return {url:..., raw_content:...}
   // per URL), unwrap it.
   let markdownContent = rawContent
   if (!markdownContent.trim()) {
     // Try to extract from results array
-    const results = response.data?.results ?? []
-    if (results.length > 0 && results[0].raw_content) {
-      markdownContent = results[0].raw_content
+    const results = Array.isArray(response.data?.results)
+      ? response.data.results
+      : []
+    const firstRaw =
+      results[0] && typeof results[0] === 'object'
+        ? results[0].raw_content
+        : undefined
+    if (typeof firstRaw === 'string' && firstRaw) {
+      markdownContent = firstRaw
     }
   }
 
@@ -611,7 +644,11 @@ export async function applyPromptToMarkdown(
       hasAppendSystemPrompt: false,
       mcpTools: [],
     },
-    model: model ? parseUserSpecifiedModel(model) : undefined,
+    model: model
+      ? model === 'inherit'
+        ? getMainLoopModel()
+        : parseUserSpecifiedModel(model)
+      : undefined,
   })
 
   // We need to bubble this up, so that the tool call throws, causing us to return

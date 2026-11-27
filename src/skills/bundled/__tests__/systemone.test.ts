@@ -22,7 +22,7 @@ describe('registerSystemoneSkill', () => {
     expect(skill!.userInvocable).toBe(true)
     expect(skill!.whenToUse).toBeTruthy()
     expect(skill!.description).toContain('typed decision')
-    expect(asPrompt(skill!).allowedTools).toContain('Systemone')
+    expect(asPrompt(skill!).allowedTools).toEqual([])
     expect(skill!.argumentHint).toBe('[decision request]')
     expect(asPrompt(skill!).source).toBe('bundled')
   })

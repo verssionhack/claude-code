@@ -218,6 +218,7 @@ import {
   convertEffortValueToLevel,
   fromLatchedEffort,
   getLiveEffortLevel,
+  modelSupportsEffort,
   type EffortLevel,
   type EffortValue,
 } from './effort.js'
@@ -901,15 +902,22 @@ export async function getAttachments(
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
     ),
-    maybe('effort_change', () =>
-      Promise.resolve(
+    maybe('effort_change', () => {
+      const appState = context.getAppState()
+      const thinkingEnabled =
+        !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) &&
+        (appState.thinkingOverride !== undefined
+          ? appState.thinkingOverride.enabled
+          : appState.thinkingEnabled)
+      return Promise.resolve(
         getEffortChangeAttachment(
           context.options.mainLoopModel,
-          context.getAppState().effortValue,
+          appState.effortValue,
           isMainThread,
+          thinkingEnabled,
         ),
-      ),
-    ),
+      )
+    }),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
         getDeferredToolsDeltaAttachment(
@@ -1548,8 +1556,11 @@ export function getEffortChangeAttachment(
   model: string,
   appStateEffort: EffortValue | undefined,
   isMainThread: boolean,
+  thinkingEnabled = true,
 ): Attachment[] {
   if (!isMainThread) return []
+  if (!thinkingEnabled) return []
+  if (!modelSupportsEffort(model)) return []
   const liveLevel = getLiveEffortLevel(model, appStateEffort)
   if (liveLevel === null) return []
   // Only meaningful when the pin has been seeded. A pin of "no param" still
@@ -1559,9 +1570,12 @@ export function getEffortChangeAttachment(
   const pinned = fromLatchedEffort(getLatchedEffort())
   const pinnedLevel =
     pinned === undefined ? 'high' : convertEffortValueToLevel(pinned)
-  if (liveLevel === pinnedLevel) return []
   const lastAnnounced = getLastEffortAnnounced()
-  if (lastAnnounced === liveLevel) return []
+  // Compare against the last announced level (or pinnedLevel before any
+  // announcement) so switching medium -> high -> medium emits a revert
+  // attachment instead of leaving the model permanently stuck on 'high'.
+  const activeLevel = lastAnnounced ?? pinnedLevel
+  if (liveLevel === activeLevel) return []
   setLastEffortAnnounced(liveLevel)
   return [{ type: 'effort_change', level: liveLevel }]
 }

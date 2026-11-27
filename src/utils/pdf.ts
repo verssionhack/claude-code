@@ -4,11 +4,16 @@ import { join } from 'path'
 import {
   PDF_MAX_EXTRACT_SIZE,
   PDF_TARGET_RAW_SIZE,
+  SELF_HOSTED_PDF_TARGET_RAW_SIZE,
 } from '../constants/apiLimits.js'
 import { errorMessage } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 import { getToolResultsDir } from './toolResultStorage.js'
 
 export type PDFError = {
@@ -55,14 +60,18 @@ export async function readPDF(filePath: string): Promise<
     }
 
     // Check if PDF exceeds maximum size
-    // The API has a 32MB total request limit. After base64 encoding (~33% larger),
-    // a PDF must be under ~20MB raw to leave room for conversation context.
-    if (originalSize > PDF_TARGET_RAW_SIZE) {
+    // The official API has a 32MB total request limit (20MB raw → ~26.7MB base64).
+    // Self-hosted backends (e.g. llama.cpp 100MB limit) allow up to 60MB raw (~80MB base64).
+    const maxPdfRawSize =
+      getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()
+        ? SELF_HOSTED_PDF_TARGET_RAW_SIZE
+        : PDF_TARGET_RAW_SIZE
+    if (originalSize > maxPdfRawSize) {
       return {
         success: false,
         error: {
           reason: 'too_large',
-          message: `PDF file exceeds maximum allowed size of ${formatFileSize(PDF_TARGET_RAW_SIZE)}.`,
+          message: `PDF file exceeds maximum allowed size of ${formatFileSize(maxPdfRawSize)}.`,
         },
       }
     }

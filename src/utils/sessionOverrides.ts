@@ -13,9 +13,9 @@ import {
   getMaxContextTokensOverride,
   setMaxContextTokensOverride,
 } from './contextWindowOverride.js'
-import type { SamplingOptions } from './sampling.js'
-import { setApiTimeoutOverride } from './apiTimeout.js'
+import { MAX_API_TIMEOUT_MS, setApiTimeoutOverride } from './apiTimeout.js'
 import { jsonStringify } from './slowOperations.js'
+import { SAMPLING_FIELDS, type SamplingOptions } from './sampling.js'
 
 /**
  * Session-scoped tuning set via slash commands (/model, /temperature,
@@ -37,12 +37,34 @@ export type SessionOverrides = {
   apiTimeoutMs?: number
 }
 
-function overridesPath(sessionId: string): string {
+// Only allow safe filename characters in sessionId (UUIDs and simple ids)
+// to prevent path traversal outside session-overrides/.
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+function overridesPath(sessionId: string): string | null {
+  if (!SAFE_SESSION_ID_RE.test(sessionId)) {
+    return null
+  }
   return join(
     getClaudeConfigHomeDir(),
     'session-overrides',
     `${sessionId}.json`,
   )
+}
+
+const persistQueues = new Map<string, Promise<void>>()
+
+function enqueuePersistOp(path: string, op: () => Promise<void>): void {
+  const prev = persistQueues.get(path) ?? Promise.resolve()
+  const next = prev
+    .catch(() => {})
+    .then(op)
+    .catch(error => {
+      logForDebugging(
+        `[sessionOverrides] persist failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      )
+    })
+  persistQueues.set(path, next)
 }
 
 export function captureSessionOverrides(
@@ -82,28 +104,27 @@ export function captureSessionOverrides(
 
 /** Fire-and-forget. Removes the file when nothing is set anymore. */
 export function persistSessionOverrides(state: AppState): void {
-  const data = captureSessionOverrides(state)
   const path = overridesPath(getSessionId())
+  if (!path) return
+  const data = captureSessionOverrides(state)
   if (!data) {
-    void rm(path, { force: true }).catch(() => {})
+    enqueuePersistOp(path, () => rm(path, { force: true }))
     return
   }
-  void mkdir(dirname(path), { recursive: true })
-    .then(() =>
-      writeFile(path, jsonStringify(data), { encoding: 'utf-8', mode: 0o600 }),
-    )
-    .catch(error => {
-      logForDebugging(
-        `[sessionOverrides] persist failed: ${error instanceof Error ? error.message : 'unknown'}`,
-      )
-    })
+  const serialized = jsonStringify(data)
+  enqueuePersistOp(path, async () => {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, serialized, { encoding: 'utf-8', mode: 0o600 })
+  })
 }
 
 export async function loadSessionOverrides(
   sessionId: string,
 ): Promise<SessionOverrides | undefined> {
+  const path = overridesPath(sessionId)
+  if (!path) return undefined
   try {
-    const raw = await readFile(overridesPath(sessionId), 'utf-8')
+    const raw = await readFile(path, 'utf-8')
     const parsed = safeParseJSON(raw, false)
     if (!parsed || typeof parsed !== 'object') return undefined
     const o = parsed as Record<string, unknown>
@@ -112,21 +133,29 @@ export async function loadSessionOverrides(
     if (typeof o.model === 'string') out.model = o.model
     else if (o.model === null) out.model = null
 
-    if (typeof o.temperatureOverride === 'number') {
+    if (
+      typeof o.temperatureOverride === 'number' &&
+      Number.isFinite(o.temperatureOverride) &&
+      o.temperatureOverride >= 0 &&
+      o.temperatureOverride <= 1
+    ) {
       out.temperatureOverride = o.temperatureOverride
     }
 
     if (o.samplingOptions && typeof o.samplingOptions === 'object') {
       const s = o.samplingOptions as Record<string, unknown>
       const so: SamplingOptions = {}
-      for (const key of [
-        'topK',
-        'topP',
-        'minP',
-        'repeatPenalty',
-        'presencePenalty',
-      ] as const) {
-        if (typeof s[key] === 'number') so[key] = s[key] as number
+      for (const field of SAMPLING_FIELDS) {
+        const val = s[field.key]
+        if (
+          typeof val === 'number' &&
+          Number.isFinite(val) &&
+          (!field.integer || Number.isInteger(val)) &&
+          val >= field.min &&
+          val <= field.max
+        ) {
+          so[field.key] = val
+        }
       }
       if (Object.keys(so).length > 0) out.samplingOptions = so
     }
@@ -136,9 +165,11 @@ export async function loadSessionOverrides(
       if (typeof t.enabled === 'boolean') {
         out.thinkingOverride = {
           enabled: t.enabled,
-          ...(typeof t.budgetTokens === 'number' && {
-            budgetTokens: t.budgetTokens,
-          }),
+          ...(typeof t.budgetTokens === 'number' &&
+            Number.isFinite(t.budgetTokens) &&
+            t.budgetTokens > 0 && {
+              budgetTokens: Math.round(t.budgetTokens),
+            }),
         }
       }
     }
@@ -146,19 +177,38 @@ export async function loadSessionOverrides(
     if (o.compactAfter && typeof o.compactAfter === 'object') {
       const c = o.compactAfter as Record<string, unknown>
       if (
-        (c.kind === 'tokens' || c.kind === 'percent') &&
-        typeof c.value === 'number'
+        c.kind === 'tokens' &&
+        typeof c.value === 'number' &&
+        Number.isFinite(c.value) &&
+        c.value > 0
       ) {
-        out.compactAfter = { kind: c.kind, value: c.value }
+        out.compactAfter = { kind: 'tokens', value: Math.round(c.value) }
+      } else if (
+        c.kind === 'percent' &&
+        typeof c.value === 'number' &&
+        Number.isFinite(c.value) &&
+        c.value > 0 &&
+        c.value <= 100
+      ) {
+        out.compactAfter = { kind: 'percent', value: c.value }
       }
     }
 
-    if (typeof o.maxContextTokens === 'number' && o.maxContextTokens > 0) {
-      out.maxContextTokens = o.maxContextTokens
+    if (
+      typeof o.maxContextTokens === 'number' &&
+      Number.isFinite(o.maxContextTokens) &&
+      o.maxContextTokens >= 1_000
+    ) {
+      out.maxContextTokens = Math.round(o.maxContextTokens)
     }
 
-    if (typeof o.apiTimeoutMs === 'number' && o.apiTimeoutMs > 0) {
-      out.apiTimeoutMs = o.apiTimeoutMs
+    if (
+      typeof o.apiTimeoutMs === 'number' &&
+      Number.isFinite(o.apiTimeoutMs) &&
+      o.apiTimeoutMs > 0 &&
+      o.apiTimeoutMs <= MAX_API_TIMEOUT_MS
+    ) {
+      out.apiTimeoutMs = Math.round(o.apiTimeoutMs)
     }
 
     return out
@@ -168,18 +218,27 @@ export async function loadSessionOverrides(
 }
 
 /**
+ * Clears out-of-AppState session overrides (bootstrap/module/env state).
+ * Called on /clear and before loading another session's overrides on /resume.
+ */
+export function resetSessionOverrides(): void {
+  setMaxContextTokensOverride(undefined)
+  setApiTimeoutOverride(undefined)
+}
+
+/**
  * Restores the parts that live outside AppState (module/bootstrap state).
  * An explicit CLI --model (already in the bootstrap override at this point)
  * wins over the saved session model — same guard pattern as agent restore.
  */
-export function applySessionOverrides(overrides: SessionOverrides): void {
-  if (overrides.model !== undefined && !getMainLoopModelOverride()) {
+export function applySessionOverrides(
+  overrides: SessionOverrides,
+  opts?: { allowModelOverride?: boolean },
+): void {
+  const allowModel = opts?.allowModelOverride ?? !getMainLoopModelOverride()
+  if (overrides.model !== undefined && allowModel) {
     setMainLoopModelOverride(overrides.model)
   }
-  if (overrides.maxContextTokens !== undefined) {
-    setMaxContextTokensOverride(overrides.maxContextTokens)
-  }
-  if (overrides.apiTimeoutMs !== undefined) {
-    setApiTimeoutOverride(overrides.apiTimeoutMs)
-  }
+  setMaxContextTokensOverride(overrides.maxContextTokens)
+  setApiTimeoutOverride(overrides.apiTimeoutMs)
 }

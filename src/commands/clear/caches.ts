@@ -143,4 +143,8 @@ export function clearSessionCaches(
   void import('@claude-code-best/builtin-tools/tools/SkillTool/prompt.js').then(
     ({ clearPromptCache }) => clearPromptCache(),
   )
+  // Clear SystemoneTool context cache (up to 64MB of cached state/images)
+  void import(
+    '@claude-code-best/builtin-tools/tools/SystemoneTool/SystemoneTool.js'
+  ).then(({ clearSystemoneContextCache }) => clearSystemoneContextCache())
 }

@@ -17,7 +17,7 @@ const DATA_URL_PATTERN =
 const IMAGE_FORMATS = 'PNG, JPEG, GIF, or WebP'
 
 export function isDataUrl(source: string): boolean {
-  return source.trim().startsWith('data:')
+  return /^data:/i.test(source.trim())
 }
 
 export function expandImageSource(source: string): string {
@@ -82,7 +82,10 @@ function normalizeDataUrl(source: string): string {
   return compact
 }
 
-async function encodeImageFile(source: string): Promise<string> {
+async function encodeImageFile(
+  source: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const path = expandPath(source)
   let size: number
   try {
@@ -109,10 +112,18 @@ async function encodeImageFile(source: string): Promise<string> {
   }
   let bytes: Buffer
   try {
-    bytes = await readFile(path)
+    bytes = await readFile(path, { signal })
   } catch (error) {
+    if (signal?.aborted) {
+      throw new AbortError()
+    }
     throw new Error(
       `Cannot read image file "${source}": ${errorMessage(error)}`,
+    )
+  }
+  if (bytes.length > SYSTEMONE_MAX_IMAGE_BYTES) {
+    throw new Error(
+      `Image file "${source}" is ${formatFileSize(bytes.length)}; the limit is ${formatFileSize(SYSTEMONE_MAX_IMAGE_BYTES)}`,
     )
   }
   const mime = sniffImageMime(bytes)
@@ -132,21 +143,21 @@ async function encodeImageFile(source: string): Promise<string> {
 export async function resolveImageSources(
   sources: string[] | undefined,
   signal?: AbortSignal,
+  budget: { usedBytes: number } = { usedBytes: 0 },
 ): Promise<string[] | undefined> {
   if (sources === undefined) {
     return undefined
   }
   const resolved: string[] = []
-  let encodedBytes = 0
   for (const source of sources) {
     if (signal?.aborted) {
       throw new AbortError()
     }
     const dataUrl = isDataUrl(source)
       ? normalizeDataUrl(source)
-      : await encodeImageFile(source)
-    encodedBytes += dataUrl.length
-    if (encodedBytes > SYSTEMONE_MAX_ENCODED_IMAGE_BYTES) {
+      : await encodeImageFile(source, signal)
+    budget.usedBytes += dataUrl.length
+    if (budget.usedBytes > SYSTEMONE_MAX_ENCODED_IMAGE_BYTES) {
       throw new Error(
         `Images exceed the ${formatFileSize(SYSTEMONE_MAX_ENCODED_IMAGE_BYTES)} encoded limit`,
       )

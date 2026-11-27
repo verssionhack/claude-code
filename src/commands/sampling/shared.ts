@@ -13,14 +13,15 @@ export function makeSamplingCall(key: keyof SamplingOptions): LocalCommandCall {
 
   return async (args, context) => {
     const arg = args.trim()
+    const lower = arg.toLowerCase()
 
     if (
-      arg === '' ||
-      arg === 'current' ||
-      arg === 'status' ||
-      arg === 'help' ||
-      arg === '-h' ||
-      arg === '--help'
+      lower === '' ||
+      lower === 'current' ||
+      lower === 'status' ||
+      lower === 'help' ||
+      lower === '-h' ||
+      lower === '--help'
     ) {
       const current = context.getAppState().samplingOptions?.[key]
       if (current === undefined) {
@@ -35,7 +36,7 @@ export function makeSamplingCall(key: keyof SamplingOptions): LocalCommandCall {
       }
     }
 
-    if (arg === 'off' || arg === 'reset' || arg === 'unset') {
+    if (lower === 'off' || lower === 'reset' || lower === 'unset') {
       context.setAppState(prev => {
         const next = { ...prev.samplingOptions }
         delete next[key]
@@ -51,10 +52,16 @@ export function makeSamplingCall(key: keyof SamplingOptions): LocalCommandCall {
     }
 
     const parsed = Number(arg)
-    if (!Number.isFinite(parsed) || parsed < spec.min || parsed > spec.max) {
+    if (
+      !Number.isFinite(parsed) ||
+      (spec.integer && !Number.isInteger(parsed)) ||
+      parsed < spec.min ||
+      parsed > spec.max
+    ) {
+      const kind = spec.integer ? 'an integer' : 'a number'
       return {
         type: 'text',
-        value: `Invalid ${spec.label}: ${arg}. Expected a number between ${spec.min} and ${spec.max}.`,
+        value: `Invalid ${spec.label}: ${arg}. Expected ${kind} between ${spec.min} and ${spec.max}.`,
       }
     }
 
@@ -62,9 +69,12 @@ export function makeSamplingCall(key: keyof SamplingOptions): LocalCommandCall {
       ...prev,
       samplingOptions: { ...prev.samplingOptions, [key]: parsed },
     }))
+    const note = spec.selfHostedOnly
+      ? `sent to custom/self-hosted backends as \`${spec.bodyKey}\`; omitted on official Anthropic API`
+      : `sent as \`${spec.bodyKey}\``
     return {
       type: 'text',
-      value: `${spec.label} set to ${parsed} (this session only — sent to the backend as \`${spec.bodyKey}\`; ignored by the official Anthropic API)`,
+      value: `${spec.label} set to ${parsed} (this session only — ${note})`,
     }
   }
 }

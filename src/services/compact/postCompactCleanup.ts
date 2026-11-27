@@ -8,9 +8,11 @@ import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logError } from '../../utils/log.js'
 import {
+  clearCurrentSessionPromptContext,
   clearSessionMessagesCache,
   recordPromptCwd,
 } from '../../utils/sessionStorage.js'
+import { saveCacheSafeParams } from '../../utils/cacheSafeParamsSlot.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
 
@@ -74,13 +76,20 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // clear so all compaction paths behave consistently.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
-  }
-  clearSystemPromptSections()
-  if (isMainThreadCompact) {
+    // Only clear system prompt sections, rendered prompt memo, and effort/beta
+    // latches on main-thread compacts: subagent compacts share module state
+    // and must not wipe the main thread's prompt-cache pins.
+    clearSystemPromptSections()
+    // Drop the post-turn CacheSafeParams snapshot so post-compact forks
+    // (/btw, /recap, /summary, subsequent /compact) don't reuse pre-compact
+    // history or prompt bytes.
+    saveCacheSafeParams(null)
     // A compact is a genuine re-render point: drop the replayed context and
-    // let the next turn derive it from the live environment. fetchSystemPromptParts
-    // records the fresh snapshot for the next resume.
+    // staged transcript snapshot so the next turn derives fresh context from
+    // the live environment and exiting immediately after compact won't replay
+    // stale pre-compact prompt-context.
     clearPersistedPromptContext()
+    clearCurrentSessionPromptContext()
     // The next turn re-renders the env section from the live cwd. Persist it
     // now so a later resume restores the same leading prompt tokens.
     recordPromptCwd(getCwd())

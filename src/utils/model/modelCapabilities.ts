@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
@@ -43,7 +44,15 @@ function getCacheDir(): string {
 }
 
 function getCachePath(): string {
-  return join(getCacheDir(), 'model-capabilities.json')
+  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim()
+  if (!baseUrl || isFirstPartyAnthropicBaseUrl()) {
+    return join(getCacheDir(), 'model-capabilities.json')
+  }
+  const key = createHash('sha256')
+    .update(baseUrl.replace(/\/+$/, '').toLowerCase())
+    .digest('hex')
+    .slice(0, 12)
+  return join(getCacheDir(), `model-capabilities-${key}.json`)
 }
 
 function isModelCapabilitiesEligible(): boolean {
@@ -74,16 +83,24 @@ function extractLlamacppCtxSize(
   const s = status as Record<string, unknown>
   const args = s.args
   if (Array.isArray(args)) {
-    for (let i = 0; i < args.length - 1; i++) {
-      if (args[i] === '--ctx-size') {
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]
+      if (typeof arg !== 'string') continue
+      if ((arg === '--ctx-size' || arg === '-c') && i + 1 < args.length) {
         const n = Number(args[i + 1])
+        if (Number.isFinite(n) && n > 0) return n
+      } else if (arg.startsWith('--ctx-size=')) {
+        const n = Number(arg.slice('--ctx-size='.length))
         if (Number.isFinite(n) && n > 0) return n
       }
     }
   }
   if (typeof s.preset === 'string') {
     const m = /ctx-size\s*=\s*(\d+)/.exec(s.preset)
-    if (m) return Number(m[1])
+    if (m) {
+      const n = Number(m[1])
+      if (Number.isFinite(n) && n > 0) return n
+    }
   }
   return undefined
 }
@@ -114,9 +131,14 @@ export function getModelCapability(model: string): ModelCapability | undefined {
   const file = loadCacheFile(path)
   const cached = file?.models
   if (!cached || cached.length === 0) return undefined
-  if (aliasesHydratedFor !== path && file?.aliases) {
-    for (const [k, v] of Object.entries(file.aliases)) {
-      modelAliases[k] = v
+  if (aliasesHydratedFor !== path) {
+    for (const k of Object.keys(modelAliases)) {
+      delete modelAliases[k]
+    }
+    if (file?.aliases) {
+      for (const [k, v] of Object.entries(file.aliases)) {
+        modelAliases[k] = v
+      }
     }
     aliasesHydratedFor = path
   }
@@ -131,21 +153,31 @@ export function getModelCapability(model: string): ModelCapability | undefined {
  * Only for custom endpoints (llama.cpp and similar proxies) — the official
  * Anthropic API returns hundreds of dated models that would flood the list.
  */
-export function getServerModelOptions(): Array<{
-  value: string
-  label: string
-  description: string
+export function getServerModels(): Array<{
+  id: string
+  maxInputTokens?: number
 }> {
   if (!isModelCapabilitiesEligible()) return []
   if (isFirstPartyAnthropicBaseUrl()) return []
   const file = loadCacheFile(getCachePath())
   if (!file?.models?.length) return []
   return file.models.map(m => ({
+    id: m.id,
+    maxInputTokens: m.max_input_tokens,
+  }))
+}
+
+export function getServerModelOptions(): Array<{
+  value: string
+  label: string
+  description: string
+}> {
+  return getServerModels().map(m => ({
     value: m.id,
     label: m.id,
     description:
-      m.max_input_tokens !== undefined
-        ? `Server model (context: ${m.max_input_tokens.toLocaleString()} tokens)`
+      m.maxInputTokens !== undefined
+        ? `Server model (context: ${m.maxInputTokens.toLocaleString()} tokens)`
         : 'Server model',
   }))
 }
@@ -183,6 +215,8 @@ export function recordResolvedModel(
   })
 }
 
+const persistQueues = new Map<string, Promise<void>>()
+
 async function persistCache(
   file: {
     models: ModelCapability[]
@@ -191,12 +225,19 @@ async function persistCache(
   },
   path: string,
 ): Promise<void> {
-  await mkdir(getCacheDir(), { recursive: true })
-  await writeFile(path, jsonStringify(file), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  })
-  loadCacheFile.cache.delete(path)
+  const prev = persistQueues.get(path) ?? Promise.resolve()
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(getCacheDir(), { recursive: true })
+      await writeFile(path, jsonStringify(file), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      })
+      loadCacheFile.cache.delete(path)
+    })
+  persistQueues.set(path, next)
+  await next
 }
 
 export async function refreshModelCapabilities(): Promise<void> {

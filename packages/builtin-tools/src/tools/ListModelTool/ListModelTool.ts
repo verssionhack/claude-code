@@ -2,7 +2,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolResultBlockParam } from 'src/Tool.js'
 import { lazySchema } from 'src/utils/lazySchema.js'
 import { MODEL_ALIASES } from 'src/utils/model/aliases.js'
-import { getServerModelOptions } from 'src/utils/model/modelCapabilities.js'
+import { getServerModels } from 'src/utils/model/modelCapabilities.js'
 
 export const LIST_MODEL_TOOL_NAME = 'ListModel'
 
@@ -90,13 +90,10 @@ Pass any returned identifier — an alias or a full server model id — directly
   async call(_input: ListModelInput): Promise<{ data: ListModelOutput }> {
     const aliases = [...MODEL_ALIASES, 'inherit']
 
-    const serverModels: ServerModelInfo[] = getServerModelOptions().map(m => {
-      const ctxMatch = /context: ([\d,]+) tokens/.exec(m.description)
-      return {
-        id: m.value,
-        context: ctxMatch ? Number(ctxMatch[1].replace(/,/g, '')) : undefined,
-      }
-    })
+    const serverModels: ServerModelInfo[] = getServerModels().map(m => ({
+      id: m.id,
+      context: m.maxInputTokens,
+    }))
 
     return { data: { aliases, serverModels } }
   },

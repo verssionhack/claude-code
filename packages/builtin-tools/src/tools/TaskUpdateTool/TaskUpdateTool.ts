@@ -36,7 +36,7 @@ const inputSchema = lazySchema(() => {
   const TaskUpdateStatusSchema = TaskStatusSchema().or(z.literal('deleted'))
 
   return z.strictObject({
-    taskId: TaskIdSchema.describe('The ID of the task to update'),
+    taskId: TaskIdSchema().describe('The ID of the task to update'),
     subject: z.string().optional().describe('New subject for the task'),
     description: z.string().optional().describe('New description for the task'),
     activeForm: z
@@ -49,11 +49,11 @@ const inputSchema = lazySchema(() => {
       'New status for the task',
     ),
     addBlocks: z
-      .array(TaskIdSchema)
+      .array(TaskIdSchema())
       .optional()
       .describe('Task IDs that this task blocks'),
     addBlockedBy: z
-      .array(TaskIdSchema)
+      .array(TaskIdSchema())
       .optional()
       .describe('Task IDs that block this task'),
     owner: z.string().optional().describe('New owner for the task'),

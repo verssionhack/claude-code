@@ -1,5 +1,8 @@
 import type { LocalCommandCall } from '../../types/command.js'
-import { setApiTimeoutOverride } from '../../utils/apiTimeout.js'
+import {
+  MAX_API_TIMEOUT_MS,
+  setApiTimeoutOverride,
+} from '../../utils/apiTimeout.js'
 
 const USAGE = [
   'Usage: /api_timeout [<duration>|off]',
@@ -44,6 +47,12 @@ function parseDurationToMs(arg: string): ParseResult {
       error: `Invalid duration: ${arg}. Timeout must be positive.`,
     }
   }
+  if (ms > MAX_API_TIMEOUT_MS) {
+    return {
+      ok: false,
+      error: `Invalid duration: ${arg}. Timeout cannot exceed ${Math.floor(MAX_API_TIMEOUT_MS / 3_600_000)}h (${MAX_API_TIMEOUT_MS}ms).`,
+    }
+  }
   return { ok: true, ms }
 }
 
@@ -56,14 +65,15 @@ function formatMs(ms: number): string {
 
 export const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim()
+  const lower = arg.toLowerCase()
 
   if (
-    arg === '' ||
-    arg === 'current' ||
-    arg === 'status' ||
-    arg === 'help' ||
-    arg === '-h' ||
-    arg === '--help'
+    lower === '' ||
+    lower === 'current' ||
+    lower === 'status' ||
+    lower === 'help' ||
+    lower === '-h' ||
+    lower === '--help'
   ) {
     const override = context.getAppState().apiTimeoutMs
     const envMs = process.env.API_TIMEOUT_MS
@@ -73,18 +83,18 @@ export const call: LocalCommandCall = async (args, context) => {
       override !== undefined
         ? `Timeout: ${formatMs(override)} (session override — /api_timeout off to restore the default)`
         : Number.isFinite(envMs) && envMs > 0
-          ? `Timeout: ${formatMs(envMs)} (from API_TIMEOUT_MS env — /api_timeout off to clear)`
+          ? `Timeout: ${formatMs(envMs)} (from API_TIMEOUT_MS env)`
           : 'Timeout: default (600s)'
     return { type: 'text', value: `${status}\n\n${USAGE}` }
   }
 
   if (
-    arg === 'off' ||
-    arg === 'reset' ||
-    arg === 'default' ||
-    arg === 'unset' ||
-    arg === 'clear' ||
-    arg === 'none'
+    lower === 'off' ||
+    lower === 'reset' ||
+    lower === 'default' ||
+    lower === 'unset' ||
+    lower === 'clear' ||
+    lower === 'none'
   ) {
     setApiTimeoutOverride(undefined)
     context.setAppState(prev => ({ ...prev, apiTimeoutMs: undefined }))

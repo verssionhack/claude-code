@@ -56,14 +56,35 @@ function isProactiveSleepAllowed(): boolean {
   )
 }
 
-function getQueueLength(): number {
+const SLEEP_INTERRUPTED_ERROR = new Error('sleep_interrupted')
+
+function snapshotCommandQueue(): Set<unknown> {
   const queue =
     require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
-  return queue.getCommandQueue().length
+  return new Set<unknown>(queue.getCommandQueue())
 }
 
-function hasNewQueuedWork(baseline: number): boolean {
-  return getQueueLength() > baseline
+function hasNewQueuedWork(baselineItems: Set<unknown>): boolean {
+  const queue =
+    require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
+  for (const item of queue.getCommandQueue()) {
+    if (!baselineItems.has(item)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isProactiveStillAllowedDuringSleep(
+  startedProactive: boolean,
+): boolean {
+  if (!isProactiveSleepAllowed()) {
+    return false
+  }
+  if (startedProactive && !isProactiveAutomationEnabled()) {
+    return false
+  }
+  return true
 }
 
 export const SleepTool = buildTool({
@@ -133,9 +154,10 @@ export const SleepTool = buildTool({
     const { duration_seconds } = input
     const startTime = Date.now()
     const sleepUntil = startTime + duration_seconds * 1000
-    const queueBaseline = getQueueLength()
+    const queueBaseline = snapshotCommandQueue()
+    const startedProactive = isProactiveAutomationEnabled()
 
-    if (isProactiveAutomationEnabled()) {
+    if (startedProactive) {
       notifyAutomationStateChanged({
         enabled: true,
         phase: 'sleeping',
@@ -172,62 +194,77 @@ export const SleepTool = buildTool({
           if (settled) return
           settled = true
           cleanup()
-          reject(new Error('interrupted'))
+          reject(SLEEP_INTERRUPTED_ERROR)
         }
 
         const onAbort = () => {
           interrupt()
         }
 
-        timer = setTimeout(finish, duration_seconds * 1000)
+        try {
+          timer = setTimeout(finish, duration_seconds * 1000)
 
-        // Abort via user interrupt
-        if (context.abortController.signal.aborted) {
-          interrupt()
-          return
-        }
-        context.abortController.signal.addEventListener('abort', onAbort, {
-          once: true,
-        })
-
-        // Wake instantly when new work lands in the shared command queue
-        // after the sleep started, or proactive automation is disabled
-        // mid-sleep. Optional-call: test mocks of these modules may lack
-        // the subscribe exports.
-        const queue =
-          require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
-        const queueUnsub = queue.subscribeToCommandQueue?.(() => {
-          if (hasNewQueuedWork(queueBaseline)) interrupt()
-        })
-        if (queueUnsub) {
-          unsubscribes.push(queueUnsub)
-        }
-
-        if (isProactiveAutomationEnabled()) {
-          const proactive =
-            require('src/proactive/index.js') as typeof import('src/proactive/index.js')
-          const proactiveUnsub = proactive.subscribeToProactiveChanges?.(() => {
-            if (!isProactiveSleepAllowed()) interrupt()
-          })
-          if (proactiveUnsub) {
-            unsubscribes.push(proactiveUnsub)
-          }
-        }
-
-        // Fallback poll in case a change signal never fires (e.g. a test
-        // mock of the queue module without event support).
-        let wakeCheck: ReturnType<typeof setInterval> | null = null
-        wakeCheck = setInterval(() => {
-          if (!isProactiveSleepAllowed() || hasNewQueuedWork(queueBaseline)) {
+          // Abort via user interrupt
+          if (context.abortController.signal.aborted) {
             interrupt()
+            return
           }
-        }, SLEEP_WAKE_CHECK_INTERVAL_MS)
-        unsubscribes.push(() => {
-          if (wakeCheck !== null) {
-            clearInterval(wakeCheck)
-            wakeCheck = null
+          context.abortController.signal.addEventListener('abort', onAbort, {
+            once: true,
+          })
+
+          // Wake instantly when new work lands in the shared command queue
+          // after the sleep started, or proactive automation is paused/disabled
+          // mid-sleep. Optional-call: test mocks of these modules may lack
+          // the subscribe exports.
+          const queue =
+            require('src/utils/messageQueueManager.js') as typeof import('src/utils/messageQueueManager.js')
+          const queueUnsub = queue.subscribeToCommandQueue?.(() => {
+            if (hasNewQueuedWork(queueBaseline)) interrupt()
+          })
+          if (queueUnsub) {
+            unsubscribes.push(queueUnsub)
           }
-        })
+
+          if (startedProactive) {
+            const proactive =
+              require('src/proactive/index.js') as typeof import('src/proactive/index.js')
+            const proactiveUnsub = proactive.subscribeToProactiveChanges?.(
+              () => {
+                if (!isProactiveStillAllowedDuringSleep(startedProactive)) {
+                  interrupt()
+                }
+              },
+            )
+            if (proactiveUnsub) {
+              unsubscribes.push(proactiveUnsub)
+            }
+          }
+
+          // Fallback poll in case a change signal never fires (e.g. a test
+          // mock of the queue module without event support).
+          let wakeCheck: ReturnType<typeof setInterval> | null = null
+          wakeCheck = setInterval(() => {
+            if (
+              !isProactiveStillAllowedDuringSleep(startedProactive) ||
+              hasNewQueuedWork(queueBaseline)
+            ) {
+              interrupt()
+            }
+          }, SLEEP_WAKE_CHECK_INTERVAL_MS)
+          unsubscribes.push(() => {
+            if (wakeCheck !== null) {
+              clearInterval(wakeCheck)
+              wakeCheck = null
+            }
+          })
+        } catch (setupError) {
+          if (!settled) {
+            settled = true
+            cleanup()
+            reject(setupError)
+          }
+        }
       })
       return {
         data: {
@@ -235,7 +272,10 @@ export const SleepTool = buildTool({
           interrupted: false,
         },
       }
-    } catch {
+    } catch (error) {
+      if (error !== SLEEP_INTERRUPTED_ERROR) {
+        throw error
+      }
       const elapsed = Math.round((Date.now() - startTime) / 1000)
       return {
         data: {

@@ -31,7 +31,7 @@ const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
 // Returns the context window size minus the max output tokens for the model
 export function getEffectiveContextWindowSize(model: string): number {
-  const reservedTokensForSummary = Math.min(
+  const rawReserved = Math.min(
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
@@ -45,7 +45,14 @@ export function getEffectiveContextWindowSize(model: string): number {
     }
   }
 
-  return contextWindow - reservedTokensForSummary
+  // For small local context windows (e.g. 8k–32k), cap the summary reservation
+  // so the effective window stays positive instead of going <= 0.
+  const reservedTokensForSummary = Math.min(
+    rawReserved,
+    Math.floor(contextWindow / 2),
+  )
+
+  return Math.max(1, contextWindow - reservedTokensForSummary)
 }
 
 export type AutoCompactTrackingState = {
@@ -78,6 +85,9 @@ export function getAutocompactBufferTokens(model: string): number {
   const effectiveWindow = getEffectiveContextWindowSize(model)
   if (effectiveWindow >= 800_000) return 50_000
   if (effectiveWindow >= 400_000) return 30_000
+  if (effectiveWindow < AUTOCOMPACT_BUFFER_TOKENS * 2) {
+    return Math.floor(effectiveWindow * 0.2)
+  }
   return AUTOCOMPACT_BUFFER_TOKENS
 }
 

@@ -3,7 +3,7 @@ import type { UUID } from 'crypto';
 import { dirname } from 'path';
 import React from 'react';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
-import { getOriginalCwd, switchSession } from '../bootstrap/state.js';
+import { getMainLoopModelOverride, getOriginalCwd, switchSession } from '../bootstrap/state.js';
 import type { Command } from '../commands.js';
 import { LogSelector } from '../components/LogSelector.js';
 import { Spinner } from '../components/Spinner.js';
@@ -32,6 +32,7 @@ import { getCwd } from '../utils/cwd.js';
 import type { FileHistorySnapshot } from '../utils/fileHistory.js';
 import { logError } from '../utils/log.js';
 import { createSystemMessage } from '../utils/messages.js';
+import { applySessionOverrides, loadSessionOverrides, resetSessionOverrides } from '../utils/sessionOverrides.js';
 import {
   computeStandaloneAgentContext,
   restoreAgentFromSession,
@@ -270,12 +271,30 @@ export function ResumeConversation({
         await recordContentReplacement(result.contentReplacements);
       }
 
+      const hadCliModelOverride = Boolean(getMainLoopModelOverride());
+      resetSessionOverrides();
+      const savedOverrides = result.sessionId ? await loadSessionOverrides(result.sessionId) : undefined;
+      if (savedOverrides) {
+        applySessionOverrides(savedOverrides, {
+          allowModelOverride: !hadCliModelOverride,
+        });
+      }
+
       const { agentDefinition: resolvedAgentDef } = restoreAgentFromSession(
         result.agentSetting,
         mainThreadAgentDefinition,
         agentDefinitions,
       );
-      setAppState(prev => ({ ...prev, agent: resolvedAgentDef?.agentType }));
+      setAppState(prev => ({
+        ...prev,
+        agent: resolvedAgentDef?.agentType,
+        ...(savedOverrides?.model !== undefined && !hadCliModelOverride ? { mainLoopModel: savedOverrides.model } : {}),
+        temperatureOverride: savedOverrides?.temperatureOverride,
+        samplingOptions: savedOverrides?.samplingOptions,
+        thinkingOverride: savedOverrides?.thinkingOverride,
+        compactAfter: savedOverrides?.compactAfter,
+        apiTimeoutMs: savedOverrides?.apiTimeoutMs,
+      }));
 
       if (feature('COORDINATOR_MODE')) {
         /* eslint-disable @typescript-eslint/no-require-imports */
@@ -292,12 +311,16 @@ export function ResumeConversation({
       }
       void updateSessionName(result.agentName);
 
-      restoreSessionMetadata(forkSession ? { ...result, worktreeSession: undefined } : result);
+      restoreSessionMetadata(
+        forkSession ? { ...result, worktreeSession: undefined, promptContext: undefined } : result,
+      );
 
       if (!forkSession) {
-        restoreWorktreeForResume(result.worktreeSession);
-        restoreSessionCwd(result.promptCwd);
-        restorePromptContext(result.promptContext);
+        const usedFreshWorktree = restoreWorktreeForResume(result.worktreeSession);
+        if (!usedFreshWorktree) {
+          restoreSessionCwd(result.promptCwd);
+          restorePromptContext(result.promptContext);
+        }
         if (result.sessionId) {
           adoptResumedSessionFile();
           recordPromptCwd(getCwd());

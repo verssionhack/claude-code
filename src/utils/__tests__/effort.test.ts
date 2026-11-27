@@ -407,7 +407,7 @@ describe('resolvePinnedRequestEffort', () => {
     delete process.env.CLAUDE_CODE_EFFORT_LEVEL
   })
 
-  test('query source routing: main manages, compact/session-memory pinned, rest live', () => {
+  test('query source routing: main manages, cache-sharing forks pinned, rest live', () => {
     expect(effortLatchModeForQuerySource('repl_main_thread')).toBe('manage')
     expect(
       effortLatchModeForQuerySource('repl_main_thread:outputStyle:custom'),
@@ -416,8 +416,13 @@ describe('resolvePinnedRequestEffort', () => {
     expect(effortLatchModeForQuerySource(undefined)).toBe('manage')
     expect(effortLatchModeForQuerySource('compact')).toBe('pinned')
     expect(effortLatchModeForQuerySource('session_memory')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('side_question')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('away_summary')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('prompt_suggestion')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('extract_memories')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('speculation')).toBe('pinned')
+    expect(effortLatchModeForQuerySource('auto_dream')).toBe('pinned')
     expect(effortLatchModeForQuerySource('agent:builtin:fork')).toBe('live')
-    expect(effortLatchModeForQuerySource('side_question')).toBe('live')
   })
 
   test('first manage-mode request seeds the latch with its live value', () => {

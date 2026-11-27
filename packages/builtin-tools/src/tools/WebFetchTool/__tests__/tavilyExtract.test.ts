@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
 import { logMock } from '../../../../../../tests/mocks/log'
 import { debugMock } from '../../../../../../tests/mocks/debug'
 import { setupAxiosMock } from '../../../../../../tests/mocks/axios'
@@ -29,29 +37,32 @@ mock.module('src/utils/log.ts', logMock)
 mock.module('src/utils/debug.ts', debugMock)
 mock.module('bun:bundle', () => ({ feature: (_name: string) => false }))
 
-mock.module('src/services/analytics/index.js', () => ({
+const realAnalyticsExports = await import('src/services/analytics/index.js')
+mock.module('src/services/analytics/index.ts', () => ({
+  ...realAnalyticsExports,
   logEvent: () => {},
   stripProtoFields: (v: unknown) => v,
 }))
 
-mock.module('src/services/api/claude.js', () => ({
+const realClaudeExports = await import('src/services/api/claude.js')
+mock.module('src/services/api/claude.ts', () => ({
+  ...realClaudeExports,
   queryHaiku: async () => ({ message: { content: [] } }),
 }))
 
-// Provide every runtime export of src/utils/http.js: modules further
-// down the chain (e.g. the real API client, loaded via the claude.js
-// mock merge) link bindings like getUserAgent against this mocked
-// namespace during circular initialization, and a partial namespace
-// breaks the whole process.
-mock.module('src/utils/http.js', () => ({
+const realHttpExports = await import('src/utils/http.js')
+mock.module('src/utils/http.ts', () => ({
+  ...realHttpExports,
   getUserAgent: () => 'claude-code/test',
   getMCPUserAgent: () => 'claude-code/test',
   getWebFetchUserAgent: () => 'TestAgent/1.0',
-  getAuthHeaders: () => ({}) as Record<string, string>,
+  getAuthHeaders: () => ({ headers: {} }),
   withOAuth401Retry: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }))
 
-mock.module('src/utils/mcpOutputStorage.js', () => ({
+const realMcpStorageExports = await import('src/utils/mcpOutputStorage.js')
+mock.module('src/utils/mcpOutputStorage.ts', () => ({
+  ...realMcpStorageExports,
   isBinaryContentType: (contentType: string) =>
     !contentType.toLowerCase().startsWith('text/'),
   persistBinaryContent: async () => ({
@@ -60,18 +71,16 @@ mock.module('src/utils/mcpOutputStorage.js', () => ({
   }),
 }))
 
-// Cache the real settings exports before registering the mock so the
-// factory can spread them: other test files in this directory register
-// their own partial settings mocks, and a partial namespace breaks the
-// circular settings → types → pluginOnlyPolicy → settings link for the
-// rest of the process. Spreading the full real export map keeps every
-// mock registration in this process intact.
 const realSettingsExports = await import('src/utils/settings/settings.js')
-
-mock.module('src/utils/settings/settings.js', () => ({
+mock.module('src/utils/settings/settings.ts', () => ({
   ...realSettingsExports,
   getSettings_DEPRECATED: () => ({}),
 }))
+
+beforeEach(async () => {
+  const { clearWebFetchCache } = await import('../utils')
+  clearWebFetchCache()
+})
 
 beforeAll(() => {
   postMock = url =>

@@ -15,6 +15,7 @@ export const SYSTEMONE_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 
 // Images are read and base64-encoded by the tool. Keep the per-file raw size
 // and the total encoded size below the request cap so state still fits.
+export const SYSTEMONE_MAX_IMAGES = 8
 export const SYSTEMONE_MAX_IMAGE_BYTES = 16 * 1024 * 1024
 export const SYSTEMONE_MAX_ENCODED_IMAGE_BYTES = 24 * 1024 * 1024
 

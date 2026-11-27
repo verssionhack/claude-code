@@ -704,10 +704,8 @@ export async function loadConversationForResume(
     const deserialized = deserializeMessagesWithInterruptDetection(messages!)
     messages = deserialized.messages
 
-    const skillListing = replayPersistedSkillListing(
-      messages,
-      log?.skillListing ?? sourceSkillListing,
-    )
+    const rawSkillListing = log?.skillListing ?? sourceSkillListing
+    replayPersistedSkillListing(messages, rawSkillListing)
 
     // Process session start hooks for resume
     const hookMessages = await processSessionStartHooks('resume', { sessionId })
@@ -740,7 +738,10 @@ export async function loadConversationForResume(
       sourceTranscriptPath,
       promptCwd,
       promptContext: log?.promptContext ?? sourcePromptContext,
-      skillListing,
+      // Return the raw persisted skillListing so --resume-session-at can
+      // re-inject it even if the unsliced transcript had a later compact
+      // boundary or skill_listing attachment that gets truncated away.
+      skillListing: rawSkillListing,
       // Goal state for hydration on resume
       goal: log?.goal,
     }

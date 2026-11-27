@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@claude-code-best/agent-tools": "workspace:*",
+    "@xmldom/xmldom": "^0.8.13",
     "marked": "^17.0.6"
   }
 }

@@ -47,12 +47,18 @@ export const IMAGE_MAX_HEIGHT = 2000
 // =============================================================================
 
 /**
- * Maximum raw file size for API requests, sized for llama.cpp (llama-server)
- * as the API backend: 80% of its 100MB httplib payload limit
- * (CPPHTTPLIB_PAYLOAD_MAX_LENGTH in llama.cpp's vendor/cpp-httplib),
- * leaving 20% headroom for the rest of the request.
+ * Maximum raw PDF file size for official Anthropic API requests.
+ * The API has a 32MB total request limit. After base64 encoding (~33% larger),
+ * a 20MB raw PDF is ~26.7MB, leaving headroom for the rest of the request.
  */
-export const PDF_TARGET_RAW_SIZE = 80 * 1024 * 1024 // 80 MB
+export const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024 // 20 MB
+
+/**
+ * Maximum raw PDF file size for self-hosted backends (e.g. llama.cpp with
+ * 100MB CPPHTTPLIB_PAYLOAD_MAX_LENGTH). 60MB raw expands to 80MB base64,
+ * leaving 20MB headroom for the rest of the request.
+ */
+export const SELF_HOSTED_PDF_TARGET_RAW_SIZE = 60 * 1024 * 1024 // 60 MB
 
 /**
  * Maximum number of pages in a PDF accepted by the API.

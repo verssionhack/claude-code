@@ -9,12 +9,16 @@ import {
   getChatGPTModelContextWindow,
 } from './model/chatgptModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 import { getMaxContextTokensOverride } from './contextWindowOverride.js'
 
-// Model context window size (200k tokens for all models right now)
-//export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
-export const MODEL_CONTEXT_WINDOW_DEFAULT = 256 * 1024
-//export const MODEL_CONTEXT_WINDOW_DEFAULT = 1024 * 1024
+// Model context window size (200k tokens for official Anthropic models;
+// 256k fallback for self-hosted/custom endpoints when /v1/models doesn't report one).
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+const CUSTOM_ENDPOINT_CONTEXT_WINDOW_DEFAULT = 256 * 1024
 
 // Maximum output tokens for compact operations
 export const COMPACT_MAX_OUTPUT_TOKENS = 20_000
@@ -137,6 +141,9 @@ export function resolveContextWindowForModel(
     if (antModel?.contextWindow) {
       return antModel.contextWindow
     }
+  }
+  if (getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
+    return CUSTOM_ENDPOINT_CONTEXT_WINDOW_DEFAULT
   }
   return MODEL_CONTEXT_WINDOW_DEFAULT
 }

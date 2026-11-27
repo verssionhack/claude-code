@@ -1804,6 +1804,16 @@ export function setLastEffortAnnounced(level: string): void {
 }
 
 /**
+ * Reset the effort latch without touching unrelated beta header latches.
+ * Called on /model switch (the cache is already cold for the new model).
+ */
+export function clearEffortLatch(): void {
+  STATE.latchedEffort = null
+  STATE.effortLatchSeeded = false
+  STATE.lastEffortAnnounced = null
+}
+
+/**
  * Reset beta header latches to null. Called on /clear and /compact so a
  * fresh conversation gets fresh header evaluation.
  */

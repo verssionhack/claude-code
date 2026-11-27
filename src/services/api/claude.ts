@@ -1764,31 +1764,46 @@ async function* queryModel(
     // adapter can honor (type:"disabled" turns thinking off; budget_tokens
     // maps to a reasoning budget) plus the llama.cpp-style
     // chat_template_kwargs.enable_thinking, applied at the template level.
+    // Guarded by !modelSupportsThinking(options.model) so Claude models routed
+    // through an Anthropic-forwarding proxy keep adaptive thinking and never
+    // receive non-standard chat_template_kwargs (HTTP 400).
     let chatTemplateKwargs: { enable_thinking: boolean } | undefined
     if (getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
-      const enabled = options.thinkingOverride
-        ? options.thinkingOverride.enabled
-        : thinkingEnabled
-      chatTemplateKwargs = { enable_thinking: enabled }
-      if (!enabled) {
-        // Off (via /thinking off or /config "no thinking"): no block above sets
-        // `thinking`, so it would be omitted and the server would keep its own
-        // default (thinking on). Send an explicit disabled config instead.
+      if (!modelSupportsThinking(options.model)) {
+        chatTemplateKwargs = { enable_thinking: thinkingEnabled }
+        if (!thinkingEnabled) {
+          // Off (via /thinking off, /config "no thinking", or
+          // CLAUDE_CODE_DISABLE_THINKING): no block above sets `thinking`, so
+          // it would be omitted and the server would keep its default.
+          thinking = {
+            type: 'disabled',
+          } satisfies BetaMessageStreamParams['thinking']
+        } else if (maxOutputTokens > 1) {
+          // On: use a concrete reasoning budget rather than adaptive, which
+          // self-hosted backends do not implement.
+          const budget =
+            options.thinkingOverride?.budgetTokens ??
+            (thinkingConfig.type === 'enabled'
+              ? thinkingConfig.budgetTokens
+              : undefined) ??
+            getMaxThinkingTokensForModel(options.model)
+          const clampedBudget =
+            maxOutputTokens > 1024
+              ? Math.min(maxOutputTokens - 1, Math.max(1024, budget))
+              : Math.max(1, Math.min(maxOutputTokens - 1, budget))
+          thinking = {
+            budget_tokens: clampedBudget,
+            type: 'enabled',
+          } satisfies BetaMessageStreamParams['thinking']
+        }
+      } else if (
+        !thinkingEnabled &&
+        options.thinkingOverride?.enabled === false
+      ) {
+        // Explicit /thinking off on a proxied Claude model: honor with standard
+        // Anthropic `thinking: { type: 'disabled' }` without extra body fields.
         thinking = {
           type: 'disabled',
-        } satisfies BetaMessageStreamParams['thinking']
-      } else {
-        // On: use a concrete reasoning budget rather than adaptive, which
-        // self-hosted backends do not implement.
-        const budget =
-          options.thinkingOverride?.budgetTokens ??
-          (thinkingConfig.type === 'enabled'
-            ? thinkingConfig.budgetTokens
-            : undefined) ??
-          getMaxThinkingTokensForModel(options.model)
-        thinking = {
-          budget_tokens: Math.min(maxOutputTokens - 1, budget),
-          type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
     }
@@ -1859,9 +1874,15 @@ async function* queryModel(
       ? (options.temperatureOverride ?? 1)
       : undefined
 
-    // Session sampling params (/top-k etc.) — extra body fields for
-    // self-hosted backends; omitted entirely when unset.
-    const samplingParams = samplingToBodyParams(options.samplingOptions)
+    // Session sampling params (/top-k etc.) — self-hosted-only fields
+    // (min_p, repeat_penalty, presence_penalty) are omitted on official
+    // Anthropic endpoints so they don't trigger HTTP 400.
+    const isOfficialAnthropic =
+      getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+    const samplingParams = samplingToBodyParams(options.samplingOptions, {
+      allowSelfHostedFields: !isOfficialAnthropic,
+      hasThinking,
+    })
 
     // Filter out any empty-string beta headers before sending.
     // Constants like CACHE_EDITING_BETA_HEADER or AFK_MODE_BETA_HEADER

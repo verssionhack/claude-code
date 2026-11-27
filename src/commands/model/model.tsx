@@ -24,6 +24,7 @@ import {
   isOpus1mMergeEnabled,
   renderDefaultModelSetting,
 } from '../../utils/model/model.js';
+import { clearEffortLatch } from '../../bootstrap/state.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
 
@@ -177,6 +178,9 @@ function SetModelAndClose({
     }
 
     function setModel(modelValue: string | null): void {
+      // Switching models already invalidates the server-side prompt cache;
+      // reset the effort pin so the new model seeds from its own live effort.
+      clearEffortLatch();
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,

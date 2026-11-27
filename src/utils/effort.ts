@@ -234,8 +234,20 @@ export function effortLatchModeForQuerySource(
   if (querySource === undefined) return 'manage'
   if (querySource === 'sdk') return 'manage'
   if (querySource.startsWith('repl_main_thread')) return 'manage'
-  if (querySource === 'compact') return 'pinned'
-  if (querySource === 'session_memory') return 'pinned'
+  // Cache-sharing forks all reuse the main thread's prompt prefix and must
+  // send the main thread's pinned effort wire value to avoid busting KV cache.
+  if (
+    querySource === 'compact' ||
+    querySource === 'session_memory' ||
+    querySource === 'side_question' ||
+    querySource === 'away_summary' ||
+    querySource === 'prompt_suggestion' ||
+    querySource === 'speculation' ||
+    querySource === 'extract_memories' ||
+    querySource === 'auto_dream'
+  ) {
+    return 'pinned'
+  }
   return 'live'
 }
 
@@ -309,8 +321,8 @@ export function getLiveEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
 ): EffortLevel | null {
-  const resolved = resolveAppliedEffort(model, appStateEffort)
-  if (resolved === undefined) return null
+  if (getEffortEnvOverride() === null) return null
+  const resolved = resolveAppliedEffort(model, appStateEffort) ?? 'high'
   return convertEffortValueToLevel(resolved)
 }
 

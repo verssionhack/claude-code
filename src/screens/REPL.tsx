@@ -245,6 +245,7 @@ import {
   createCommandInputMessage,
   formatCommandInputTags,
 } from '../utils/messages.js';
+import { applySessionOverrides, loadSessionOverrides, resetSessionOverrides } from '../utils/sessionOverrides.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
 import {
   BASH_INPUT_TAG,
@@ -2280,11 +2281,30 @@ export function REPL({
         // this would kick the user out of a worktree they're still working
         // in. Same fork skip as processResumedConversation for the adopt —
         // fork materializes its own file via recordTranscript on REPL mount.
+        // Restore target session's tuning overrides (and clear outgoing
+        // session's overrides so Session A's settings never bleed into Session B).
+        resetSessionOverrides();
+        const targetOverrides = await loadSessionOverrides(sessionId);
+        if (targetOverrides) {
+          applySessionOverrides(targetOverrides, { allowModelOverride: true });
+        }
+        setAppState(prev => ({
+          ...prev,
+          ...(targetOverrides?.model !== undefined ? { mainLoopModel: targetOverrides.model } : {}),
+          temperatureOverride: targetOverrides?.temperatureOverride,
+          samplingOptions: targetOverrides?.samplingOptions,
+          thinkingOverride: targetOverrides?.thinkingOverride,
+          compactAfter: targetOverrides?.compactAfter,
+          apiTimeoutMs: targetOverrides?.apiTimeoutMs,
+        }));
+
         if (entrypoint !== 'fork') {
           exitRestoredWorktree();
-          restoreWorktreeForResume(log.worktreeSession);
-          restoreSessionCwd(resolvePromptCwd(log.messages, log.promptCwd));
-          restorePromptContext(log.promptContext);
+          const usedFreshWorktree = restoreWorktreeForResume(log.worktreeSession);
+          if (!usedFreshWorktree) {
+            restoreSessionCwd(resolvePromptCwd(log.messages, log.promptCwd));
+            restorePromptContext(log.promptContext);
+          }
           adoptResumedSessionFile();
           recordPromptCwd(getCwd());
           void restoreRemoteAgentTasks({

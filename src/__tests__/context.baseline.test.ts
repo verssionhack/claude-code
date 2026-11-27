@@ -8,6 +8,7 @@ import {
   setRenderedSystemPrompt,
 } from '../bootstrap/state'
 import {
+  clearPersistedPromptContext,
   getSystemContext,
   getUserContext,
   setPersistedPromptContext,
@@ -33,6 +34,7 @@ beforeEach(async () => {
   await writeTempFile(tempDir, 'CLAUDE.md', projectClaudeMdContent)
 
   clearMemoryFileCaches()
+  clearPersistedPromptContext()
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
   setSystemPromptInjection(null)
@@ -41,6 +43,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   clearMemoryFileCaches()
+  clearPersistedPromptContext()
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
   setSystemPromptInjection(null)

@@ -14,14 +14,15 @@ const USAGE = [
 
 export const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim()
+  const lower = arg.toLowerCase()
 
   if (
-    arg === '' ||
-    arg === 'current' ||
-    arg === 'status' ||
-    arg === 'help' ||
-    arg === '-h' ||
-    arg === '--help'
+    lower === '' ||
+    lower === 'current' ||
+    lower === 'status' ||
+    lower === 'help' ||
+    lower === '-h' ||
+    lower === '--help'
   ) {
     const current = context.getAppState().temperatureOverride
     if (current === undefined) {
@@ -33,7 +34,7 @@ export const call: LocalCommandCall = async (args, context) => {
     }
   }
 
-  if (arg === 'reset' || arg === 'default' || arg === 'unset') {
+  if (lower === 'reset' || lower === 'default' || lower === 'unset') {
     context.setAppState(prev => ({ ...prev, temperatureOverride: undefined }))
     return { type: 'text', value: 'Temperature reset to default (1)' }
   }

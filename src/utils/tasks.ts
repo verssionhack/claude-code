@@ -76,10 +76,18 @@ export type TaskStatus = z.infer<ReturnType<typeof TaskStatusSchema>>
 /**
  * Task IDs are sequential integer strings ("1", "2", ...) created by
  * createTask, but models routinely emit them as JSON numbers (e.g.
- * `taskId: 17`). Coerce to a string so a numeric ID parses instead of
- * rejecting the whole tool call with an InputValidationError.
+ * `taskId: 17`). Preprocess finite integers into strings while keeping
+ * strict non-empty string validation so missing/null/boolean/object/float
+ * inputs are properly rejected (unlike z.coerce.string() which turns
+ * undefined into "undefined").
  */
-export const TaskIdSchema = z.coerce.string()
+export const TaskIdSchema = lazySchema(() =>
+  z.preprocess(
+    (v: unknown) =>
+      typeof v === 'number' && Number.isInteger(v) ? String(v) : v,
+    z.string().min(1),
+  ),
+)
 
 export const TaskSchema = lazySchema(() =>
   z.object({

@@ -24,10 +24,18 @@ const USAGE = [
 
 export const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim()
+  const lower = arg.toLowerCase()
   const model = context.options.mainLoopModel
   const serverWindow = resolveContextWindowForModel(model, getSdkBetas())
 
-  if (arg === '') {
+  if (
+    lower === '' ||
+    lower === 'current' ||
+    lower === 'status' ||
+    lower === 'help' ||
+    lower === '-h' ||
+    lower === '--help'
+  ) {
     const current = getMaxContextTokensOverride()
     if (current === undefined) {
       return {
@@ -41,7 +49,7 @@ export const call: LocalCommandCall = async (args, context) => {
     }
   }
 
-  if (arg === 'off' || arg === 'reset' || arg === 'unset') {
+  if (lower === 'off' || lower === 'reset' || lower === 'unset') {
     setMaxContextTokensOverride(undefined)
     persistSessionOverrides(context.getAppState())
     return {

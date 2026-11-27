@@ -921,6 +921,12 @@ class Project {
    * post-compact). Skipped when unchanged — the values are memoized per
    * process, so this normally writes once per render point.
    */
+  clearCurrentSessionPromptContext(): void {
+    this.currentSessionPromptContext = undefined
+    this.writtenPromptContextKey = undefined
+    this.writtenPromptContextFile = undefined
+  }
+
   recordPromptContext(context: PersistedPromptContext): void {
     this.currentSessionPromptContext = context
     this.writePromptContextIfChanged()
@@ -3090,6 +3096,10 @@ function promptContextKey(context: PersistedPromptContext): string {
  * Persist the environment-derived leading prompt tokens for the next resume.
  * Call once the system prompt sections and user/system context are resolved.
  */
+export function clearCurrentSessionPromptContext(): void {
+  getProject().clearCurrentSessionPromptContext()
+}
+
 export function recordPromptContext(context: PersistedPromptContext): void {
   getProject().recordPromptContext(context)
 }
@@ -3552,9 +3562,18 @@ async function scanPreBoundaryMetadata(
     }
 
     // Guard against quadratic carry growth for pathological huge lines
-    // (e.g., a 10 MB tool-output line with no newline). Real metadata entries
-    // are <1 KB, so if carry exceeds this we're mid-message-content — drop it.
-    if (carry.length > 64 * 1024) carry = null
+    // (e.g., a 10 MB tool-output line with no newline). Ordinary metadata
+    // entries are <1 KB, except `prompt-context` which carries the rendered
+    // system prompt + CLAUDE.md and can exceed 64 KB. Allow up to 2 MB when
+    // the carried line starts/contains a metadata marker, otherwise drop at 64 KB.
+    if (carry.length > 64 * 1024) {
+      const looksLikeMetadata =
+        carry.length <= 2 * 1024 * 1024 &&
+        METADATA_MARKER_BUFS.some(m => carry!.includes(m))
+      if (!looksLikeMetadata) {
+        carry = null
+      }
+    }
   }
 
   // Final incomplete line (no trailing newline at endOffset)
@@ -4029,6 +4048,13 @@ export async function loadTranscriptFile(
         if (isCompactBoundaryMessage(entry)) {
           contextCollapseCommits.length = 0
           contextCollapseSnapshot = undefined
+          // A compact boundary is a render point: discard pre-compact
+          // prompt-context snapshots so resuming right after compact does not
+          // replay stale pre-compact system prompt/date/cwd alongside a new
+          // post-compact prompt-cwd.
+          if (entry.sessionId) {
+            promptContexts.delete(entry.sessionId as UUID)
+          }
         }
       } else if (entry.type === 'summary' && entry.leafUuid) {
         summaries.set(entry.leafUuid, entry.summary)

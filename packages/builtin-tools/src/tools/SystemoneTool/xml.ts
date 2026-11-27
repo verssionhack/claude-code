@@ -155,7 +155,7 @@ function parseQuestion(
       }
       criteria.push(text)
     }
-    if (criteria.length === 0) {
+    if (criteria.length < 2) {
       throw new Error(`score question "${id}" needs at least two <level>`)
     }
     questions[id] = { type, instructions, criteria }
@@ -207,17 +207,18 @@ export function parseSystemoneXml(xml: string): XmlRequest {
     )
   }
   // The tool has no reason to accept a DTD; refusing them also rules out
-  // external entities and entity-expansion attacks.
-  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
+  // external entities and entity-expansion attacks. Strip CDATA sections first
+  // so HTML/XML content inside <state><![CDATA[<!DOCTYPE html>...]]></state>
+  // is not rejected as a false positive.
+  const outsideCdata = xml.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
+  if (/<!DOCTYPE|<!ENTITY/i.test(outsideCdata)) {
     throw new Error('request_xml must not contain DTD or entity declarations')
   }
 
   const issues: string[] = []
   const doc = new DOMParser({
-    errorHandler: (level, message) => {
-      if (level !== 'warning') {
-        issues.push(String(message))
-      }
+    errorHandler: (_level, message) => {
+      issues.push(String(message))
     },
   }).parseFromString(xml, 'text/xml')
   if (issues.length > 0) {

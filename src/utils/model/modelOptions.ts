@@ -579,11 +579,13 @@ export function getModelOptions(fastMode = false): ModelOption[] {
   }
 
   // Custom endpoints (llama.cpp etc.): put the models the server reports via
-  // /v1/models at the top of the picker — they are the ones actually servable
-  for (const opt of getServerModelOptions()) {
-    if (!options.some(existing => existing.value === opt.value)) {
-      options.unshift(opt)
-    }
+  // /v1/models at the top of the picker — they are the ones actually servable.
+  // Collect before unshifting so server ordering is preserved.
+  const serverOpts = getServerModelOptions().filter(
+    opt => !options.some(existing => existing.value === opt.value),
+  )
+  if (serverOpts.length > 0) {
+    options.unshift(...serverOpts)
   }
 
   // Add custom model from either the current model value or the initial one

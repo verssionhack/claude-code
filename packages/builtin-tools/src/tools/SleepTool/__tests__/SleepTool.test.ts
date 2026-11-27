@@ -90,4 +90,29 @@ describe('SleepTool', () => {
     expect(result.data.slept_seconds).toBeLessThan(10)
     expect(getCommandQueue()).toHaveLength(2)
   })
+
+  test('wakes when pre-existing queued work is cleared and new work arrives (same queue length)', async () => {
+    enqueue({
+      value: 'old work',
+      mode: 'prompt',
+    })
+
+    const sleepPromise = SleepTool.call({ duration_seconds: 10 }, {
+      abortController: new AbortController(),
+    } as any)
+
+    setTimeout(() => {
+      resetCommandQueue()
+      enqueue({
+        value: 'replacement new work',
+        mode: 'prompt',
+      })
+    }, 20)
+
+    const result = await sleepPromise
+
+    expect(result.data.interrupted).toBe(true)
+    expect(result.data.slept_seconds).toBeLessThan(10)
+    expect(getCommandQueue()).toHaveLength(1)
+  })
 })

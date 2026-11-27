@@ -36,12 +36,37 @@ function trim(value: string | undefined): string | undefined {
 }
 
 function joinSystemonePath(base: string): string {
-  const clean = base.trim().replace(/\/+$/, '')
-  // An OpenAI-compatible base already carries /v1; an Anthropic base does not.
-  if (clean.endsWith('/v1') || clean.endsWith('/v1beta')) {
-    return `${clean}/systemone`
+  const trimmed = base.trim()
+  try {
+    const parsed = new URL(trimmed)
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    if (pathname.endsWith('/systemone')) {
+      parsed.pathname = pathname
+    } else if (pathname.endsWith('/v1') || pathname.endsWith('/v1beta')) {
+      parsed.pathname = `${pathname}/systemone`
+    } else {
+      parsed.pathname = `${pathname}/v1/systemone`
+    }
+    return parsed.toString()
+  } catch {
+    const clean = trimmed.replace(/\/+$/, '')
+    if (clean.endsWith('/systemone')) {
+      return clean
+    }
+    if (clean.endsWith('/v1') || clean.endsWith('/v1beta')) {
+      return `${clean}/systemone`
+    }
+    return `${clean}/v1/systemone`
   }
-  return `${clean}/v1/systemone`
+}
+
+function isValidHttpUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 function isPrivateHost(hostname: string): boolean {
@@ -67,12 +92,12 @@ function isPrivateHost(hostname: string): boolean {
     return false
   }
   const [a, b] = octets
+  // Exclude 169.254.0.0/16 (link-local / cloud metadata endpoints like 169.254.169.254).
   return (
     a === 10 ||
     a === 127 ||
     (a === 192 && b === 168) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 169 && b === 254)
+    (a === 172 && b >= 16 && b <= 31)
   )
 }
 
@@ -157,11 +182,11 @@ export function resolveSystemoneEndpoint(
     : {}
 
   const explicitUrl = trim(input.explicitUrl)
-  if (explicitUrl) {
+  if (explicitUrl && isValidHttpUrl(explicitUrl)) {
     return { url: explicitUrl, auth: explicitAuth, source: 'override' }
   }
   const explicitBase = trim(input.explicitBase)
-  if (explicitBase) {
+  if (explicitBase && isValidHttpUrl(explicitBase)) {
     return {
       url: joinSystemonePath(explicitBase),
       auth: explicitAuth,
@@ -203,7 +228,10 @@ export function resolveSystemoneEndpoint(
     }
     return {
       url: joinSystemonePath(base),
-      auth: sessionAuth(provider, input),
+      auth:
+        Object.keys(explicitAuth).length > 0
+          ? explicitAuth
+          : sessionAuth(provider, input),
       source: 'session',
     }
   }

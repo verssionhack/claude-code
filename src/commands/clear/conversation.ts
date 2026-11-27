@@ -51,6 +51,7 @@ import {
   initTaskOutputAsSymlink,
 } from '../../utils/task/diskOutput.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
+import { resetSessionOverrides } from '../../utils/sessionOverrides.js'
 import { clearSessionCaches } from './caches.js'
 
 function notifyRemoteConversationCleared(): void {
@@ -144,6 +145,20 @@ export async function clearConversation({
     setConversationId(randomUUID())
   }
 
+  // Generate new session ID and reset session file pointer BEFORE clearing
+  // session caches: clearSessionCaches() runs runPostCompactCleanup() which
+  // records prompt-cwd into the active session file. Doing this after the
+  // switch prevents corrupting the outgoing session's transcript with its
+  // drifted tail shell cwd.
+  setCwd(getOriginalCwd())
+  resetSessionOverrides()
+  clearSessionMetadata()
+  regenerateSessionId({ setCurrentAsParent: true })
+  if (process.env.USER_TYPE === 'ant' && process.env.CLAUDE_CODE_SESSION_ID) {
+    process.env.CLAUDE_CODE_SESSION_ID = getSessionId()
+  }
+  await resetSessionFilePointer()
+
   // Clear all session-related caches. Per-agent state for preserved background
   // tasks (invoked skills, pending permission callbacks, dump state, cache-break
   // tracking) is retained so those agents keep functioning.
@@ -160,10 +175,9 @@ export async function clearConversation({
   // Drop the post-turn CacheSafeParams snapshot: it holds the pre-clear
   // conversation's full message history. The session-id check in
   // getLastCacheSafeParams would reject it anyway after regenerateSessionId
-  // below, but clearing here releases the memory immediately.
+  // above, but clearing here releases the memory immediately.
   saveCacheSafeParams(null)
 
-  setCwd(getOriginalCwd())
   readFileState.clear()
   discoveredSkillNames?.clear()
   loadedNestedMemoryPaths?.clear()
@@ -206,6 +220,13 @@ export async function clearConversation({
         ...prev,
         tasks: nextTasks,
         attribution: createEmptyAttributionState(),
+        // Clear session-scoped tuning overrides so they don't bleed into the
+        // fresh session.
+        temperatureOverride: undefined,
+        samplingOptions: undefined,
+        thinkingOverride: undefined,
+        compactAfter: undefined,
+        apiTimeoutMs: undefined,
         // Clear standalone agent context (name/color set by /rename, /color)
         // so the new session doesn't display the old session's identity badge
         standaloneAgentContext: undefined,
@@ -230,19 +251,6 @@ export async function clearConversation({
 
   // Clear plan slug cache so a new plan file is used after /clear
   clearAllPlanSlugs()
-
-  // Clear cached session metadata (title, tag, agent name/color)
-  // so the new session doesn't inherit the previous session's identity
-  clearSessionMetadata()
-
-  // Generate new session ID to provide fresh state
-  // Set the old session as parent for analytics lineage tracking
-  regenerateSessionId({ setCurrentAsParent: true })
-  // Update the environment variable so subprocesses use the new session ID
-  if (process.env.USER_TYPE === 'ant' && process.env.CLAUDE_CODE_SESSION_ID) {
-    process.env.CLAUDE_CODE_SESSION_ID = getSessionId()
-  }
-  await resetSessionFilePointer()
 
   // Preserved local_agent tasks had their TaskOutput symlink baked against the
   // old session ID at spawn time, but post-clear transcript writes land under
